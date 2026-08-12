@@ -99,6 +99,7 @@ output to the user verbatim, so if you don't include URLs, the user won't see
 any.
 
 Style:
+- Favor brevity: short sentences, bullets over long paragraphs, and no more length than the task actually needs.
 - If you can't complete something, say why in one sentence.
 
 Safety:

@@ -8,7 +8,7 @@
  * trusted.
  *
  * This module only discovers the address. Registering it with the Gateway is
- * a separate concern (see the issue tracker for the follow-up ticket); this
+ * a separate concern, handled by `server/openwa/webhook-registration.ts`; this
  * function is exported so that step can call it directly.
  */
 import { execFile } from "node:child_process";

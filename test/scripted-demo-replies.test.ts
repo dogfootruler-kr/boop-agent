@@ -34,6 +34,7 @@ const originalEnv = new Map(MANAGED_ENV.map((key) => [key, process.env[key]]));
 const FROM_NUMBER = ["+", "1", "555", "000", "0100"].join("");
 const RECIPIENT = ["+", "1", "555", "000", "0101"].join("");
 const WHATSAPP_GATEWAY_URL = "http://gateway.example:8080";
+const RECIPIENT_JID = `${RECIPIENT.slice(1)}@c.us`;
 const WATER_BOTTLE_PROMPT = "what was that water bottle brand my mom texted me about";
 
 function configureSendblue(): void {
@@ -143,6 +144,40 @@ describe("maybeHandleScriptedDemoReply", () => {
     const urls = urlsCalled(fetchMock);
     expect(urls.some((url) => url.startsWith(WHATSAPP_GATEWAY_URL))).toBe(true);
     expect(urls.some((url) => url.includes("api.sendblue.com"))).toBe(false);
+  });
+
+  it("keeps the WhatsApp typing indication on for the scripted pause, instead of flickering off immediately", async () => {
+    configureSendblue();
+    configureWhatsapp();
+    await loadChannels();
+    const fetchMock = stubFetch();
+    vi.useFakeTimers();
+
+    const typingBodies = () =>
+      fetchMock.mock.calls
+        .filter(([url]) => String(url).startsWith(`${WHATSAPP_GATEWAY_URL}/api/simulateTyping`))
+        .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+
+    const handled = maybeHandleScriptedDemoReply({
+      conversationId: `whatsapp:${RECIPIENT}`,
+      content: WATER_BOTTLE_PROMPT,
+      turnTag: "test",
+    });
+
+    // Let the synchronous setup run: typing must already be on, and the
+    // scripted pause has not elapsed yet, so it must not have been turned
+    // off again this fast.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(typingBodies()).toContainEqual({ to: RECIPIENT_JID, on: true });
+    expect(typingBodies()).not.toContainEqual({ to: RECIPIENT_JID, on: false });
+
+    // Once the scripted pause (150ms) has elapsed, typing turns off again.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(typingBodies()).toContainEqual({ to: RECIPIENT_JID, on: false });
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await handled;
+    vi.useRealTimers();
   });
 
   it("does not intercept a non-demo message on either channel", async () => {

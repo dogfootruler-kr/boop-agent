@@ -193,8 +193,8 @@ export function isTrustedLocalRequest(request: RequestLike): boolean {
  * caller into the tailnet.
  *
  * No host or origin check applies here. A request from the tailnet legitimately
- * carries the tailnet name of this machine as its `Host`, and the payload on
- * the one path this guards is HMAC-verified further in.
+ * carries the tailnet name of this machine as its `Host`, and the one path
+ * this guards further checks a shared secret further in.
  */
 function isTailnetOrLoopbackRequest(request: RequestLike): boolean {
   const trusted = (value: string | undefined) =>
@@ -223,10 +223,11 @@ export function isPublicServerRequest(request: RequestLike): boolean {
   // user's own hardware on the user's own tailnet, so unlike Sendblue it never
   // needs to reach Boop over the public internet. The path is on this list AND
   // additionally restricted to loopback or tailnet sources: both, not either.
-  // The payload is HMAC-verified in `server/openwa/webhook-auth.ts`, and that
-  // signature is deliberately not sufficient on its own - a leaked secret must
-  // not be enough to reach the agent, the user's memory, and every connected
-  // integration. Read `docs/adr/0002-inbound-trust-boundary.md`.
+  // Every call must also carry the shared secret checked in
+  // `server/openwa/webhook-auth.ts`, and that secret is deliberately not
+  // sufficient on its own - a leaked secret must not be enough to reach the
+  // agent, the user's memory, and every connected integration. Read
+  // `docs/adr/0002-inbound-trust-boundary.md`.
   if (request.method === "POST" && normalizedPath === "/whatsapp/webhook") {
     return isTailnetOrLoopbackRequest(request);
   }

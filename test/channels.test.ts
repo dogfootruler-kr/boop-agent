@@ -195,6 +195,31 @@ describe("sendToConversation", () => {
     expect(content).not.toContain("# Heading");
   });
 
+  it("converts a markdown table to plain-text records instead of raw pipes, since iMessage renders no tables", async () => {
+    configureSendblue();
+    await loadChannels();
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const text = [
+      "| Name | Role |",
+      "| --- | --- |",
+      "| Alice | Engineer |",
+      "| Bob | Designer |",
+    ].join("\n");
+
+    await sendToConversation(`sms:${RECIPIENT}`, text);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const { content } = JSON.parse(String(init.body)) as { content: string };
+    expect(content).toBe(
+      ["Name: Alice", "Role: Engineer", "", "Name: Bob", "Role: Designer"].join("\n"),
+    );
+    expect(content).not.toContain("|");
+    expect(content).not.toContain("---");
+  });
+
   it("redacts phone numbers from every part it delivers", async () => {
     configureSendblue();
     await loadChannels();

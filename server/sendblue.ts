@@ -31,8 +31,55 @@ export function extractSendblueMediaUrls(
   return [...urls];
 }
 
+/** A GFM table separator row, e.g. `| --- | --- |` or `--- | ---`. */
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function splitTableRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+/**
+ * Render a markdown table as plain-text `header: value` records instead of
+ * raw `| --- |` pipes, which iMessage has no way to render as a grid.
+ *
+ * This is the code guarantee for tables that `stripMarkdown` alone never
+ * provided: it only strips emphasis, fences, headings, and links, so a table
+ * passed through unchanged used to arrive on iMessage as literal pipe syntax.
+ */
+function stripMarkdownTables(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const headerLine = lines[i];
+    const separatorLine = lines[i + 1];
+    if (
+      headerLine.includes("|") &&
+      separatorLine !== undefined &&
+      TABLE_SEPARATOR_RE.test(separatorLine)
+    ) {
+      const headers = splitTableRow(headerLine);
+      i += 2;
+      const records: string[] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        const cells = splitTableRow(lines[i]);
+        records.push(headers.map((h, idx) => `${h}: ${cells[idx] ?? ""}`).join("\n"));
+        i += 1;
+      }
+      out.push(records.join("\n\n"));
+      continue;
+    }
+    out.push(headerLine);
+    i += 1;
+  }
+  return out.join("\n");
+}
+
 function stripMarkdown(text: string): string {
-  return text
+  return stripMarkdownTables(text)
     .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?|```/g, ""))
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/\*(.+?)\*/g, "$1")

@@ -235,7 +235,10 @@ information, integration action, file/system access, or verification beyond
 what you can see in the image, call spawn_agent and pass the relevant storage
 IDs to its imageRefs parameter so the sub-agent can see the image too. If the
 user sends a photo with no caption, ask a short clarifying question rather
-than guessing what they want.`;
+than guessing what they want.
+
+Keep replies concise: say what's needed and stop, rather than padding a
+short answer out to more length than the question needs.`;
 
 interface HandleOpts {
   conversationId: string;

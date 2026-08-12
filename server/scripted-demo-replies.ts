@@ -123,22 +123,25 @@ export async function maybeHandleScriptedDemoReply(
 
   if (demo === "water-bottle") {
     log("matched water bottle demo prompt");
-    startTypingForConversation(opts.conversationId)();
+    let stopTyping = startTypingForConversation(opts.conversationId);
     await wait(150);
+    stopTyping();
     await sendStep("Searching your messages for the thread from your mom...");
 
-    startTypingForConversation(opts.conversationId)();
+    stopTyping = startTypingForConversation(opts.conversationId);
     await wait(1800);
+    stopTyping();
     await sendStep("It was the LARQ bottle.");
     return true;
   }
 
   log("matched LinkedIn browser demo prompt");
-  startTypingForConversation(opts.conversationId)();
+  let stopTyping = startTypingForConversation(opts.conversationId);
   await wait(250);
+  stopTyping();
   await sendStep("I'll go check it.");
 
-  startTypingForConversation(opts.conversationId)();
+  stopTyping = startTypingForConversation(opts.conversationId);
   try {
     await Promise.all([
       openLinkedInLoginForDemo(),
@@ -148,6 +151,7 @@ export async function maybeHandleScriptedDemoReply(
   } catch (err) {
     console.error(`[turn ${opts.turnTag}] [demo-script] failed to open LinkedIn login`, err);
   }
+  stopTyping();
   await sendStep(
     "I tried using the browser, but I need you to log in. Please log in and then, when you're done, let me know.",
   );
