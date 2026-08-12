@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
 import { createWhatsappRouter } from "./openwa/webhook.js";
+import { ensureWhatsappWebhook } from "./openwa/webhook-registration.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
 import { loadChannels } from "./channels/registry.js";
@@ -215,6 +216,12 @@ async function main() {
     console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
     console.log(`  whatsapp    POST http://localhost:${port}/whatsapp/webhook`);
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
+
+    // Tell the WhatsApp gateway where to deliver inbound messages, once the
+    // port it will be told about is actually accepting connections. Fired and
+    // forgotten on purpose: it never rejects, it is silent when WhatsApp is
+    // unconfigured, and a gateway that is down must not stop Boop starting.
+    void ensureWhatsappWebhook({ port });
   });
 
   const signalExitCodes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;
