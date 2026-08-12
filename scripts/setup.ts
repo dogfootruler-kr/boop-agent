@@ -5,6 +5,11 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BOOP_TAILNET_ADDRESS_ENV,
+  discoverSelfTailnetAddress,
+  TailscaleUnavailableError,
+} from "../server/openwa/tailnet.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_PATH = resolve(ROOT, ".env.local");
@@ -649,6 +654,165 @@ Before you start:
     SENDBLUE_API_SECRET: answers.SENDBLUE_API_SECRET ?? sendblueDefaults.SENDBLUE_API_SECRET,
     SENDBLUE_FROM_NUMBER: answers.SENDBLUE_FROM_NUMBER ?? sendblueDefaults.SENDBLUE_FROM_NUMBER,
   });
+
+  // ---- WhatsApp channel (via OpenWA) ---------------------------------------
+  banner("WhatsApp channel - optional");
+  console.log(`
+Boop can also be reached on WhatsApp, through a gateway called OpenWA that you
+run yourself on always-on hardware on your Tailscale tailnet. Skip this if you
+only want iMessage - nothing else about Boop changes.
+
+Before you start, you'll need:
+  • OpenWA running and reachable on your tailnet: https://github.com/open-wa/wa-automate-nodejs
+  • Tailscale installed and running on THIS machine (the one running Boop): https://tailscale.com/download
+`);
+
+  const existingWhatsapp = {
+    WHATSAPP_GATEWAY_URL: existing.WHATSAPP_GATEWAY_URL ?? "",
+    WHATSAPP_API_KEY: existing.WHATSAPP_API_KEY ?? "",
+    WHATSAPP_SESSION_ID: existing.WHATSAPP_SESSION_ID ?? "",
+    WHATSAPP_ALLOWLIST: existing.WHATSAPP_ALLOWLIST ?? "",
+    WHATSAPP_SELF_ADDRESS: existing.WHATSAPP_SELF_ADDRESS ?? "",
+  };
+  const whatsappAlreadyConfigured = Boolean(
+    existingWhatsapp.WHATSAPP_GATEWAY_URL && existingWhatsapp.WHATSAPP_API_KEY,
+  );
+
+  const { setUpWhatsapp } = await prompts(
+    {
+      type: "confirm",
+      name: "setUpWhatsapp",
+      message: whatsappAlreadyConfigured
+        ? "WhatsApp is already configured. Review or update it now?"
+        : "Configure the WhatsApp channel now?",
+      initial: whatsappAlreadyConfigured,
+    },
+    {
+      onCancel: () => {
+        console.log("Setup cancelled.");
+        process.exit(1);
+      },
+    },
+  );
+
+  if (!setUpWhatsapp) {
+    console.log("\nSkipped. The whatsapp channel stays absent - iMessage is unaffected.");
+    Object.assign(answers, existingWhatsapp);
+  } else {
+    const whatsappAnswers = await prompts(
+      [
+        {
+          type: "text",
+          name: "WHATSAPP_GATEWAY_URL",
+          message:
+            "OpenWA Gateway base URL on your tailnet, no trailing /api (e.g. http://100.x.x.x:8080)",
+          initial: existingWhatsapp.WHATSAPP_GATEWAY_URL,
+        },
+        {
+          type: "password",
+          name: "WHATSAPP_API_KEY",
+          message: "OpenWA Gateway API key",
+          initial: existingWhatsapp.WHATSAPP_API_KEY,
+        },
+        {
+          type: "text",
+          name: "WHATSAPP_SESSION_ID",
+          message: "OpenWA session identifier (the one WhatsApp session Boop is bound to)",
+          initial: existingWhatsapp.WHATSAPP_SESSION_ID || "boop",
+        },
+        {
+          type: "text",
+          name: "WHATSAPP_ALLOWLIST",
+          message:
+            "Allowlist: who may message Boop on WhatsApp (comma-separated E.164 numbers or JIDs)",
+          initial: existingWhatsapp.WHATSAPP_ALLOWLIST,
+        },
+        {
+          type: "text",
+          name: "WHATSAPP_SELF_ADDRESS",
+          message:
+            "Override for the Gateway account's own WhatsApp address (optional - leave blank unless OpenWA can't work it out itself)",
+          initial: existingWhatsapp.WHATSAPP_SELF_ADDRESS,
+        },
+      ],
+      {
+        onCancel: () => {
+          console.log("Setup cancelled.");
+          process.exit(1);
+        },
+      },
+    );
+    Object.assign(answers, whatsappAnswers);
+
+    console.log(`
+Note: there is no separate webhook secret to set. Boop derives one itself from
+the API key above and registers it with OpenWA when it starts. That means
+rotating WHATSAPP_API_KEY also rotates the webhook secret - restart Boop
+afterward so it re-registers with OpenWA, or WhatsApp messages will stop
+arriving until it does.
+`);
+
+    banner("WhatsApp - Boop's own tailnet address");
+    console.log(`
+OpenWA needs an address to deliver inbound WhatsApp messages to: Boop's own
+address on your tailnet. Boop works this out itself by asking the local
+Tailscale node running on this machine, so you don't have to find and type a
+MagicDNS name.
+`);
+
+    const existingOverride = existing[BOOP_TAILNET_ADDRESS_ENV]?.trim();
+    let tailnetAddress: string;
+    let overrideToPersist = existingOverride;
+    try {
+      tailnetAddress = await discoverSelfTailnetAddress({ override: existingOverride });
+      console.log(
+        `✓ Boop's tailnet address: ${tailnetAddress}` +
+          (existingOverride ? ` (from ${BOOP_TAILNET_ADDRESS_ENV})` : ""),
+      );
+    } catch (err) {
+      const message = err instanceof TailscaleUnavailableError ? err.message : String(err);
+      console.log(`\n⚠ ${message}\n`);
+
+      const { manualAddress } = await prompts(
+        {
+          type: "text",
+          name: "manualAddress",
+          message:
+            "Enter Boop's tailnet address manually (e.g. 100.x.x.x), or leave blank to abort setup and fix Tailscale first",
+          initial: "",
+        },
+        {
+          onCancel: () => {
+            console.log("Setup cancelled.");
+            process.exit(1);
+          },
+        },
+      );
+
+      if (!manualAddress) {
+        console.error(
+          "\nAborting: the WhatsApp channel needs Boop's tailnet address, and Tailscale could not " +
+            "provide one. Install/start Tailscale and re-run `npm run setup`, or set " +
+            `${BOOP_TAILNET_ADDRESS_ENV} yourself in .env.local.`,
+        );
+        process.exit(1);
+      }
+
+      try {
+        tailnetAddress = await discoverSelfTailnetAddress({ override: manualAddress });
+      } catch (err2) {
+        const message2 = err2 instanceof TailscaleUnavailableError ? err2.message : String(err2);
+        console.error(`\nAborting: ${message2}`);
+        process.exit(1);
+      }
+      overrideToPersist = manualAddress;
+      console.log(`✓ Boop's tailnet address: ${tailnetAddress} (manually entered)`);
+    }
+
+    if (overrideToPersist) {
+      (answers as any)[BOOP_TAILNET_ADDRESS_ENV] = overrideToPersist;
+    }
+  }
 
   // ---- Composio API key ---------------------------------------------------
   banner("Composio — integrations (Gmail, Slack, GitHub, Linear, 1000+ more)");
