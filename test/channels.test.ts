@@ -27,6 +27,11 @@ const originalEnv = new Map(MANAGED_ENV.map((key) => [key, process.env[key]]));
 const FROM_NUMBER = ["+", "1", "555", "000", "0100"].join("");
 const RECIPIENT = ["+", "1", "555", "000", "0101"].join("");
 const LEAKED_PHONE = ["+", "1", "555", "555", "0102"].join("");
+// The same number, written by the agent with markdown emphasis *inside* it.
+// Every adapter's formatting removes or rewrites those markers, so this is the
+// shape that puts the digits back together on the way to the Gateway.
+const MARKED_UP_PHONE = ["+", "1", " 555 ", "**", "555", "**", " 0103"].join("");
+const MARKED_UP_PHONE_AS_READ = ["+", "1", " 555 ", "555", " 0103"].join("");
 const WHATSAPP_GATEWAY_URL = "http://gateway.example:8080";
 // The Handle is E.164; the JID is what the adapter reconstructs to send.
 const RECIPIENT_JID = `${RECIPIENT.slice(1)}@c.us`;
@@ -205,6 +210,21 @@ describe("sendToConversation", () => {
     expect(bodies.join("\n")).not.toContain(LEAKED_PHONE);
   });
 
+  it("redacts a number whose digits only come back together once markdown is stripped", async () => {
+    configureSendblue();
+    await loadChannels();
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendToConversation(`sms:${RECIPIENT}`, `Her number is ${MARKED_UP_PHONE}`);
+
+    const bodies = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse(String((init as RequestInit).body)).content as string,
+    );
+    expect(bodies.join("\n")).toBe("Her number is [phone number hidden]");
+    expect(bodies.join("\n")).not.toContain(MARKED_UP_PHONE_AS_READ);
+  });
+
   it("splits a long reply into parts the gateway accepts", async () => {
     configureSendblue();
     await loadChannels();
@@ -296,6 +316,18 @@ describe("the whatsapp channel", () => {
     const contents = fetchMock.mock.calls.map((call) => bodyOf(call).content as string);
     expect(contents.join("\n")).toBe("Call *[phone number hidden]* now");
     expect(contents.join("\n")).not.toContain(LEAKED_PHONE);
+  });
+
+  it("redacts a number whose digits only come back together once markup is translated", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    await sendToConversation(`whatsapp:${RECIPIENT}`, `Her number is ${MARKED_UP_PHONE}`);
+
+    const contents = fetchMock.mock.calls.map((call) => bodyOf(call).content as string);
+    expect(contents.join("\n")).toBe("Her number is [phone number hidden]");
+    // What WhatsApp renders, rather than what was sent: emphasis markers are
+    // invisible to the reader, so a number split by them is still a leak.
+    expect(contents.join("\n").replace(/[*_~`]/g, "")).not.toContain(MARKED_UP_PHONE_AS_READ);
   });
 
   it("translates to WhatsApp markup and keeps code blocks intact", async () => {

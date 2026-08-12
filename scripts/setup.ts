@@ -812,6 +812,38 @@ MagicDNS name.
     if (overrideToPersist) {
       (answers as any)[BOOP_TAILNET_ADDRESS_ENV] = overrideToPersist;
     }
+
+    // ---- Which channel Boop starts a conversation on ------------------------
+    // Only worth asking once there is more than one channel to choose from.
+    // Everyone else keeps iMessage without being asked about it.
+    banner("Proactive notices - which channel");
+    console.log(`
+When Boop starts the conversation itself - an urgent email the Gmail watcher
+surfaced, or an automation result - it needs to know where to reach you. It is
+the same phone number either way; only the channel differs.
+
+This needs BOOP_USER_PHONE set in .env.local to deliver anything at all.
+`);
+
+    const { BOOP_PROACTIVE_CHANNEL } = await prompts(
+      {
+        type: "select",
+        name: "BOOP_PROACTIVE_CHANNEL",
+        message: "Deliver proactive notices on:",
+        choices: [
+          { title: "iMessage (unchanged)", value: "" },
+          { title: "WhatsApp", value: "whatsapp" },
+        ],
+        initial: existing.BOOP_PROACTIVE_CHANNEL === "whatsapp" ? 1 : 0,
+      },
+      {
+        onCancel: () => {
+          console.log("Setup cancelled.");
+          process.exit(1);
+        },
+      },
+    );
+    (answers as any).BOOP_PROACTIVE_CHANNEL = BOOP_PROACTIVE_CHANNEL ?? "";
   }
 
   // ---- Composio API key ---------------------------------------------------

@@ -81,7 +81,7 @@ How it runs:
 - **`server/automations.ts`** starts a 30-second poll (`startAutomationLoop`) when the server boots.
 - On each tick it loads enabled automations from Convex, finds ones whose `nextRunAt` is ≤ now, and fires each one in parallel.
 - Firing = `spawnExecutionAgent({ task, integrations, conversationId, name: "auto:..." })` — the same sub-agent system the interaction agent uses.
-- The result is written as an `automationRun` row, and (if `notifyConversationId` points at an `sms:+...` conversation) pushed back out via Sendblue so the user sees it in iMessage.
+- The result is written as an `automationRun` row, and (if the automation has a `notifyConversationId`) delivered on whichever Channel that conversation belongs to, so an automation created over WhatsApp reports back over WhatsApp. It is stored as an assistant message only if it was delivered.
 - `nextRunAt` is recomputed with `croner` and stored.
 
 The four MCP tools exposed to the interaction agent (`server/automation-tools.ts`):
@@ -201,8 +201,11 @@ Read `CONTEXT.md` for the vocabulary and `docs/adr/0001-channel-port-for-messagi
 - `sms.ts` - the adapter for Apple iMessage, with Sendblue as its gateway. It registers only when Sendblue is configured, so an unconfigured channel resolves to nothing rather than to a broken adapter.
 - `whatsapp.ts` - the adapter for WhatsApp, with OpenWA as its gateway. Same rule: no gateway configured means the channel is absent, not broken. Outbound formatting lives here because it is about WhatsApp the destination rather than OpenWA the client - markdown is translated into WhatsApp's own markup, code blocks are kept, and the chunk threshold is ~65,000 characters so a long reply arrives whole.
 - `outbound.ts` - `sendToConversation` and `startTypingForConversation`. Every send site routes through here, so none of them knows which channel it is talking on.
+- `delivery.ts` - `deliverAssistantMessage`: send, and record the message in Convex only if it actually went out. A conversation whose channel is absent delivered nothing, and storing it anyway would show the debug dashboard a message the user never received.
+- `proactive.ts` - the one configured Conversation Boop reaches the user on when it starts the conversation itself, from `BOOP_USER_PHONE` and `BOOP_PROACTIVE_CHANNEL` (blank means `sms`). Everything else outbound already has a Conversation ID to answer on.
 
 Phone-number redaction runs in `sendToConversation`, above the adapter's `formatOutbound`, so no adapter can be written that skips it.
+It runs on both sides of formatting, because those are different guarantees: before, the reply is whole, so a number a chunk boundary would split is still one number; after, the text is what `Channel.send` is about to put on the wire, and formatting is exactly what turns `+1 555 **000** 0101` back into a phone number by removing the markers `redactPhoneNumbers` relied on to not see one.
 
 ### 10a. OpenWA gateway - `server/openwa/`
 

@@ -18,7 +18,8 @@ import express from "express";
 import { api } from "../../convex/_generated/api.js";
 import { convex } from "../convex-client.js";
 import { broadcast } from "../broadcast.js";
-import { sendToConversation, startTypingForConversation } from "../channels/outbound.js";
+import { startTypingForConversation } from "../channels/outbound.js";
+import { deliverAssistantMessage } from "../channels/delivery.js";
 import { handleUserMessage } from "../interaction-agent.js";
 import { redactContactHandle, redactPhoneNumbers } from "../privacy.js";
 import { maybeHandleScriptedDemoReply } from "../scripted-demo-replies.js";
@@ -109,12 +110,9 @@ export function createWhatsappRouter(): express.Router {
         console.log(
           `[turn ${turnTag}] → reply (${elapsed}s, ${reply.length} chars): ${JSON.stringify(replyPreview)}`,
         );
-        await sendToConversation(conversationId, reply);
-        await convex.mutation(api.messages.send, {
-          conversationId,
-          role: "assistant",
-          content: reply,
-        });
+        // Recorded only if it went out: a reply nobody received must not
+        // appear on the dashboard as one the user got.
+        await deliverAssistantMessage(conversationId, reply);
       } else {
         console.log(`[turn ${turnTag}] → (no reply)`);
       }

@@ -22,6 +22,7 @@
  */
 import { admitWhatsappSender } from "./handles.js";
 import { parseWhatsappAddress } from "./addresses.js";
+import { loadWhatsappConfig } from "./config.js";
 import { verifyWhatsappWebhookSecret } from "./webhook-auth.js";
 
 /** The one Gateway event Boop acts on. Everything else is ignored. */
@@ -39,6 +40,14 @@ export type WhatsappDropReason =
   | "not-a-message"
   /** Boop's own outbound message, echoed back by the Gateway. */
   | "own-message"
+  /**
+   * A sender that resolves to the Gateway account's own Handle.
+   *
+   * Distinct from `own-message` on purpose: seeing this reason means the
+   * Gateway did not flag its own echo, which is the exact condition a
+   * self-reply loop needs.
+   */
+  | "self-address"
   /** A group. Being added to one must not turn every message in it into a turn. */
   | "group"
   /** No Handle could be recovered from the sender's address. */
@@ -133,6 +142,24 @@ export async function admitInboundWhatsappMessage(
   //    `handles.ts` and both log their own drops.
   const sender = await admitWhatsappSender(message.from);
   if (!sender.ok) return drop(sender.reason);
+
+  // Defence in depth against a self-reply loop, and the second guard beside
+  // `fromMe` above. The operator links their own WhatsApp account to the
+  // Gateway, so the Gateway's own address is on the Allowlist and Boop's own
+  // replies come back through this gate looking admissible; `fromMe` is all
+  // that stops reply-webhook-reply-webhook, and a Gateway build or echo path
+  // that omits it makes that loop unbounded. Optional: without
+  // WHATSAPP_SELF_ADDRESS there is no self Handle to compare against and this
+  // costs nothing.
+  const selfHandle = loadWhatsappConfig()?.selfHandle;
+  if (selfHandle && sender.handle === selfHandle) {
+    console.warn(
+      "[whatsapp] dropped a message whose sender is the gateway's own address, and which the " +
+        "gateway did not flag as its own - WHATSAPP_SELF_ADDRESS is the only thing standing " +
+        "between this and a self-reply loop",
+    );
+    return drop("self-address");
+  }
 
   // Last, so that nothing about admitting a sender depends on what they sent.
   // An image message may carry no caption at all, so emptiness is judged on

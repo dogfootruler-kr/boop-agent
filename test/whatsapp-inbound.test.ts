@@ -26,6 +26,7 @@ const WHATSAPP_ENV = [
   "WHATSAPP_API_KEY",
   "WHATSAPP_SESSION_ID",
   "WHATSAPP_ALLOWLIST",
+  "WHATSAPP_SELF_ADDRESS",
 ] as const;
 
 const originalEnv = new Map(WHATSAPP_ENV.map((key) => [key, process.env[key]]));
@@ -275,6 +276,35 @@ describe("admitInboundWhatsappMessage", () => {
       admitted: false,
       reason,
     });
+  });
+
+  it("drops a message from the gateway's own address even when the gateway forgot fromMe", async () => {
+    // The operator links their own WhatsApp account to the gateway, so the
+    // gateway's own address is on the Allowlist and Boop's own replies come
+    // back to the webhook looking admissible. `fromMe` is the only thing
+    // between that and a reply-webhook-reply loop; this is the second guard.
+    process.env.WHATSAPP_SELF_ADDRESS = OWNER_HANDLE;
+
+    expect(await admitSigned(textMessage({ body: "a reply Boop sent" }))).toEqual({
+      admitted: false,
+      reason: "self-address",
+    });
+  });
+
+  it("admits that same message when no self-address is configured", async () => {
+    delete process.env.WHATSAPP_SELF_ADDRESS;
+
+    const admission = await admitSigned(textMessage({ body: "a reply Boop sent" }));
+
+    expect(admission.admitted).toBe(true);
+  });
+
+  it("admits an allowlisted sender who is not the gateway's own address", async () => {
+    process.env.WHATSAPP_SELF_ADDRESS = `+${["1", "555", "000", "0109"].join("")}`;
+
+    const admission = await admitSigned(textMessage());
+
+    expect(admission.admitted).toBe(true);
   });
 
   it("admits nobody when the gateway is unconfigured, whatever the call carries", async () => {

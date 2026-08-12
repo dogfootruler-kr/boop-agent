@@ -78,7 +78,12 @@ It collects:
 - **Session identifier** - the same one you gave OpenWA in Step 1, e.g. `boop`.
 - **Allowlist** - who may message Boop on WhatsApp.
   See the Allowlist section below before filling this in.
-- **Self-address override** (optional) - leave this blank unless Boop cannot work out the Gateway account's own WhatsApp address on its own; you will know you need it if setup or the startup logs ask for it.
+- **Self-address override** (optional) - the Gateway account's own WhatsApp address, written as E.164 or as a `@c.us` JID.
+  Setting it makes Boop drop any inbound message whose sender resolves to that address, as a second guard beside the Gateway's own "this message is mine" flag.
+  Leaving it blank changes nothing about how Boop behaves today.
+  See "A self-reply loop" under Troubleshooting for when it earns its keep.
+- **Proactive notice channel** - where Boop reaches you when it starts the conversation itself, rather than replying to something you sent.
+  See "Proactive notices on WhatsApp" below.
 
 Setup also works out Boop's own tailnet address automatically, by asking the local Tailscale node running on this machine.
 You are not asked to find or type a MagicDNS name yourself.
@@ -117,6 +122,29 @@ It is derived from `WHATSAPP_API_KEY` by Boop itself, so nothing has to be typed
 The consequence: **rotating `WHATSAPP_API_KEY` also rotates the signing secret.**
 Update `.env.local` with the new key, then restart Boop so it re-registers the webhook with OpenWA under the new secret.
 Until you restart, OpenWA still holds the old secret and WhatsApp messages will stop arriving, since Boop will reject a webhook call signed with a secret derived from a key it no longer has.
+
+## Proactive notices on WhatsApp
+
+Most of what Boop sends is a reply, and a reply goes back on the channel the message came in on, so there is nothing to configure.
+Two things are not replies: a proactive notice about an urgent email, and an automation result.
+Those have no inbound message to answer, so Boop has to be told where to send them.
+
+`BOOP_PROACTIVE_CHANNEL` in `.env.local` is that setting.
+Leave it blank for iMessage, which is what happens if you never touch it, or set it to `whatsapp`:
+
+```
+BOOP_USER_PHONE=+15550000101
+BOOP_PROACTIVE_CHANNEL=whatsapp
+```
+
+It is the same phone number either way, since a handle is E.164 on every channel.
+`BOOP_USER_PHONE` is what says *who*, and this setting is what says *where*; without the number set, notices are dropped and logged whichever channel you pick.
+
+Set this to `whatsapp` only once the WhatsApp channel above actually works, since a notice has nowhere to go on a channel with no Gateway configured.
+When that happens Boop logs it and does **not** record the message, so what the debug dashboard shows stays honest about what you received.
+
+Automations are unaffected by this setting.
+An automation notifies on the conversation you created it in, so one you set up over WhatsApp reports back over WhatsApp.
 
 ## The Allowlist
 
@@ -216,6 +244,16 @@ Grep for `DROPPED` in the server logs:
 The logged shape (digit count, suffix) is deliberately not the real number, since these logs get pasted into issues in a public repo.
 If this happens for a sender you expect to be reachable, it usually means OpenWA's contact lookup could not resolve their `@lid` to a phone number; there is no fix on Boop's side beyond that lookup succeeding.
 
+**The sender was the Gateway's own account.**
+Only possible when you set `WHATSAPP_SELF_ADDRESS`, and only for a message the Gateway did not flag as its own.
+Grep for `self-reply loop`:
+
+```
+[whatsapp] dropped a message whose sender is the gateway's own address, and which the gateway did not flag as its own - WHATSAPP_SELF_ADDRESS is the only thing standing between this and a self-reply loop
+```
+
+See "A self-reply loop" below.
+
 **Sender resolved fine but is not on the Allowlist.**
 Grep for `not on the allowlist`:
 
@@ -225,3 +263,22 @@ Grep for `not on the allowlist`:
 
 Fix: add the sender's number to `WHATSAPP_ALLOWLIST` in `.env.local` (E.164 or JID, see the Allowlist section above) and restart Boop.
 Group messages are always refused regardless of the Allowlist and do not produce this specific log line - being added to a group must not turn every message in it into an agent turn.
+
+### A self-reply loop
+
+You linked your own WhatsApp account to the Gateway, so the Gateway's own address is the one you put on the Allowlist.
+Every reply Boop sends therefore comes back to the webhook from a sender Boop is configured to accept.
+
+The only thing that normally stops that from becoming reply-webhook-reply-webhook forever is the Gateway flagging its own messages as its own, which OpenWA does.
+If a Gateway version or an echo path ever stops doing that, the loop is unbounded and expensive.
+
+`WHATSAPP_SELF_ADDRESS` is the second guard.
+Set it to the Gateway account's own address and Boop drops anything from that sender, flagged or not:
+
+```
+WHATSAPP_SELF_ADDRESS=+15550000101
+```
+
+It is optional and off by default: leave it blank and Boop behaves exactly as it does today.
+Set it if the Gateway account and an Allowlist entry are the same account, which is the common single-account setup.
+Note that this is a drop, not a filter on your own messages arriving from elsewhere: a message you send Boop from that same account is indistinguishable from Boop's own echo, so if you talk to Boop from the linked account itself, leave this blank.

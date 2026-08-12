@@ -5,7 +5,7 @@
  * not know or care which Channel it is talking on, and a Channel added later
  * is reachable from all of them without editing any of them.
  */
-import { redactPhoneNumbers } from "../privacy.js";
+import { redactPhoneNumbersThroughMarkup } from "../privacy.js";
 import {
   isChannelKey,
   parseConversationId,
@@ -33,9 +33,17 @@ export async function sendToConversation(
   // Intentional privacy guard, and the reason it lives here instead of in an
   // adapter: redaction runs above per-channel formatting, so no adapter can be
   // written that delivers a phone number by skipping it.
-  const safe = redactPhoneNumbers(text);
+  //
+  // It runs twice, on either side of formatting, because those are two
+  // different guarantees and neither implies the other. Before, the whole
+  // reply is intact, so a number a chunk boundary would later split is still
+  // one number. After, the text is what `Channel.send` is about to put on the
+  // wire, which is the only text the guarantee is actually about: formatting
+  // rewrites markup, and `+1 555 **000** 0101` becomes a whole phone number
+  // the moment an adapter strips those markers.
+  const safe = redactPhoneNumbersThroughMarkup(text);
   for (const part of target.channel.formatOutbound(safe)) {
-    await target.channel.send(target.handle, part);
+    await target.channel.send(target.handle, redactPhoneNumbersThroughMarkup(part));
   }
   return true;
 }

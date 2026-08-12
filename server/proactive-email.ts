@@ -10,7 +10,8 @@ import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
 import { runAgentRuntime } from "./runtimes/index.js";
 import { EMPTY_USAGE, type UsageTotals } from "./usage.js";
 import { handleUserMessage } from "./interaction-agent.js";
-import { sendToConversation } from "./channels/outbound.js";
+import { deliverAssistantMessage } from "./channels/delivery.js";
+import { proactiveConversationId } from "./channels/proactive.js";
 import { ensureTrigger, getComposio, listConnectedToolkits } from "./composio.js";
 import { ensureWebhookSubscription } from "./composio-webhook.js";
 import { describeUserNow } from "./timezone-config.js";
@@ -274,34 +275,12 @@ async function recallPreferenceLines(): Promise<string[]> {
   }
 }
 
-// Bring whatever the user put in BOOP_USER_PHONE to E.164 (+1XXXXXXXXXX).
-// Without this, a bare 10-digit number in env produces an `sms:NNNNNNNNNN`
-// conversation that doesn't match the `sms:+1NNNNNNNNNN` ID Sendblue uses
-// for inbound messages from the same person — proactive notices end up in
-// a parallel Convex conversation invisible to the user-driven thread.
-function normalizeProactivePhone(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("+")) return trimmed;
-  if (/^\d{10}$/.test(trimmed)) return `+1${trimmed}`;
-  if (/^\d{11,15}$/.test(trimmed)) return `+${trimmed}`;
-  return null;
-}
-
 async function dispatchProactiveNotice(summary: string): Promise<void> {
-  const raw = process.env.BOOP_USER_PHONE;
-  if (!raw) {
-    console.warn("[proactive] BOOP_USER_PHONE not set; skipping dispatch");
-    return;
-  }
-  const phone = normalizeProactivePhone(raw);
-  if (!phone) {
-    console.warn(
-      `[proactive] BOOP_USER_PHONE=${JSON.stringify(raw)} doesn't look like a valid phone number; skipping dispatch`,
-    );
-    return;
-  }
-  const conversationId = `sms:${phone}`;
+  // The Channel the user configured, not a hardcoded one: urgent mail is
+  // exactly the thing that must not arrive somewhere they are not looking.
+  // `server/channels/proactive.ts` logs why it answered null.
+  const conversationId = proactiveConversationId();
+  if (!conversationId) return;
   const reply = await handleUserMessage({
     conversationId,
     content: `[proactive notice] ${summary}`,
@@ -310,22 +289,13 @@ async function dispatchProactiveNotice(summary: string): Promise<void> {
   // handleUserMessage only sends from inside send_ack; the final
   // reply is the caller's responsibility.
   if (reply && reply !== "(no reply)") {
-    await sendToConversation(conversationId, reply);
-    await convex.mutation(api.messages.send, {
-      conversationId,
-      role: "assistant",
-      content: reply,
-    });
+    await deliverAssistantMessage(conversationId, reply);
   } else {
     // IA stayed silent — fall back to the raw classifier summary so the
     // user still gets the notice; otherwise classification was a no-op.
-    await sendToConversation(conversationId, summary);
-    await convex.mutation(api.messages.send, {
-      conversationId,
-      role: "assistant",
-      content: summary,
-    });
-    console.log(`[proactive] IA produced no reply; sent raw summary`);
+    if (await deliverAssistantMessage(conversationId, summary)) {
+      console.log(`[proactive] IA produced no reply; sent raw summary`);
+    }
   }
 }
 
@@ -348,9 +318,9 @@ export async function ensureProactiveWatcher(publicUrl: string): Promise<void> {
     console.warn("[proactive] COMPOSIO_API_KEY not set; skipping watcher setup");
     return;
   }
-  if (!process.env.BOOP_USER_PHONE) {
+  if (!proactiveConversationId()) {
     console.warn(
-      "[proactive] BOOP_USER_PHONE not set; webhook will register but notices won't dispatch",
+      "[proactive] the webhook will register but notices won't dispatch until the conversation above is configured",
     );
   }
   try {
