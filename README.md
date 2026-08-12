@@ -346,7 +346,7 @@ Visit `http://localhost:5173` for the debug dashboard (chat, agents, memory, eve
 - **Integrations** are provided by [Composio](https://composio.dev/?utm_source=chris&utm_medium=youtube&utm_campaign=collab). The dispatcher names toolkits by slug (`spawn_agent(integrations: ["gmail"])`); `server/composio.ts` opens a toolkit-scoped Composio session per spawn and wraps its tools as an MCP server. No per-integration code to write.
 - **Local browser use** is a separate optional integration named `browser`. It appears to the dispatcher only after you enable it in Settings, and it controls a persistent local Chrome profile through Patchright.
 
-Deep dive: [ARCHITECTURE.md](./ARCHITECTURE.md). Adding your own tools: [INTEGRATIONS.md](./INTEGRATIONS.md).
+Deep dive: [ARCHITECTURE.md](./ARCHITECTURE.md). Adding your own tools: [INTEGRATIONS.md](./INTEGRATIONS.md). WhatsApp channel setup: [docs/whatsapp-setup.md](./docs/whatsapp-setup.md).
 
 ---
 
