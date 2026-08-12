@@ -103,8 +103,56 @@ describe("admitInboundWhatsappMessage", () => {
         conversationId: `whatsapp:${OWNER_HANDLE}`,
         externalMessageId: MESSAGE_ID,
         text: "hello",
+        chatId: OWNER_JID,
+        hasMedia: false,
       },
     });
+  });
+
+  it("admits an image message with no caption, carrying the chat and message id for ingest", async () => {
+    const admission = await admitSigned(
+      envelope({ from: OWNER_JID, id: MESSAGE_ID, type: "image" }),
+    );
+
+    expect(admission).toEqual<WhatsappAdmission>({
+      admitted: true,
+      message: {
+        handle: OWNER_HANDLE,
+        conversationId: `whatsapp:${OWNER_HANDLE}`,
+        externalMessageId: MESSAGE_ID,
+        text: "",
+        chatId: OWNER_JID,
+        hasMedia: true,
+      },
+    });
+  });
+
+  it("takes the caption as text on an image message and still reports it as media", async () => {
+    const admission = await admitSigned(
+      envelope({ from: OWNER_JID, id: MESSAGE_ID, type: "image", caption: "look at this" }),
+    );
+
+    expect(admission).toMatchObject({
+      admitted: true,
+      message: { text: "look at this", hasMedia: true },
+    });
+  });
+
+  it("carries the gateway's own chatId through verbatim rather than deriving it from the sender", async () => {
+    // A direct chat's id normally mirrors the sender's address, so a
+    // different value here only proves the field is read from the envelope
+    // and not silently recomputed from `from`.
+    const admission = await admitSigned(textMessage({ chatId: STRANGER_JID }));
+
+    expect(admission).toMatchObject({ admitted: true, message: { chatId: STRANGER_JID } });
+  });
+
+  it("does not treat an unrecognized message type as media", async () => {
+    const admission = await admitSigned(
+      envelope({ from: OWNER_JID, id: MESSAGE_ID, type: "ptt", body: "" }),
+    );
+
+    expect(admission).toEqual({ admitted: false, reason: "empty" });
   });
 
   it("admits an allowlisted sender who arrives as a @lid", async () => {

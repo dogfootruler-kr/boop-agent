@@ -12,7 +12,9 @@
  * sender resolution to a Handle, then the Allowlist check. Everything a
  * message can cost Boop - a Convex write, a dedup row, an agent turn carrying
  * the user's memory and every connected integration - happens in the handler,
- * strictly after this function has said yes.
+ * strictly after this function has said yes. That includes fetching media:
+ * this function only ever notices that a message carries an image and passes
+ * the chat and message ID along, never fetches the bytes itself.
  *
  * Note that the per-function test style cannot assert that ordering, only the
  * decision. That gap is accepted deliberately; the ordering is a code-review
@@ -54,8 +56,22 @@ export interface AdmittedWhatsappMessage {
   readonly conversationId: string;
   /** The Gateway's own message id, for the dedup claim. Absent on some events. */
   readonly externalMessageId?: string;
-  /** The message text, or its caption when it carried one. */
+  /** The message text, or its caption when it carried one. May be empty on a media message with no caption. */
   readonly text: string;
+  /**
+   * The chat this message belongs to, in the Gateway's own address form.
+   * Equal to the sender's address for a direct message. Needed, together with
+   * `externalMessageId`, to make the authenticated media fetch: see
+   * `ingestWhatsappImage` in `server/openwa/media.ts`.
+   */
+  readonly chatId: string;
+  /**
+   * Whether the Gateway reported this message as carrying an image.
+   * Fetching it is expensive and stays out of this gate entirely: the caller
+   * decides whether and when to call `ingestWhatsappImage`, strictly after
+   * admission and the dedup claim.
+   */
+  readonly hasMedia: boolean;
 }
 
 export type WhatsappAdmission =
@@ -119,10 +135,13 @@ export async function admitInboundWhatsappMessage(
   if (!sender.ok) return drop(sender.reason);
 
   // Last, so that nothing about admitting a sender depends on what they sent.
-  // An image with no caption lands here today because inbound media is not
-  // ingested yet; that is where media ingest hooks in.
+  // An image message may carry no caption at all, so emptiness is judged on
+  // text and media together: nothing to answer only when there is neither.
+  // Fetching the media itself is deliberately not done here - it is
+  // expensive and this function must stay cheap enough to run on every call.
   const text = (message.body || message.caption || "").trim();
-  if (!text) return drop("empty");
+  const hasMedia = message.type === "image";
+  if (!text && !hasMedia) return drop("empty");
 
   return {
     admitted: true,
@@ -131,6 +150,8 @@ export async function admitInboundWhatsappMessage(
       conversationId: `whatsapp:${sender.handle}`,
       externalMessageId: message.id,
       text,
+      chatId: message.chatId ?? message.from,
+      hasMedia,
     },
   };
 }
@@ -150,6 +171,13 @@ interface RawMessage {
   readonly fromMe?: boolean;
   readonly isGroupMsg?: boolean;
   readonly chatId?: string;
+  /**
+   * The Gateway's message type, e.g. `"chat"` for text or `"image"` for a
+   * photo. Only `"image"` is acted on: inbound media stays images only,
+   * matching iMessage, so video, audio, and document types are read here but
+   * treated exactly like an ordinary text message with no recognized media.
+   */
+  readonly type?: string;
 }
 
 function drop(reason: WhatsappDropReason): WhatsappAdmission {
@@ -178,6 +206,7 @@ function readMessage(payload: unknown): RawMessage | null {
     fromMe: message.fromMe === true,
     isGroupMsg: message.isGroupMsg === true,
     chatId: str(message.chatId),
+    type: str(message.type),
   };
 }
 

@@ -22,6 +22,7 @@ import { sendToConversation, startTypingForConversation } from "../channels/outb
 import { handleUserMessage } from "../interaction-agent.js";
 import { redactContactHandle, redactPhoneNumbers } from "../privacy.js";
 import { admitInboundWhatsappMessage, type WhatsappDropReason } from "./inbound.js";
+import { ingestWhatsappImage } from "./media.js";
 import { WHATSAPP_WEBHOOK_SECRET_HEADER } from "./webhook-auth.js";
 
 export function createWhatsappRouter(): express.Router {
@@ -39,7 +40,8 @@ export function createWhatsappRouter(): express.Router {
       return;
     }
 
-    const { handle, conversationId, externalMessageId, text } = admission.message;
+    const { handle, conversationId, externalMessageId, text, chatId, hasMedia } =
+      admission.message;
 
     if (externalMessageId) {
       const { claimed } = await convex.mutation(api.channelDedup.claim, {
@@ -49,6 +51,22 @@ export function createWhatsappRouter(): express.Router {
       if (!claimed) {
         res.json({ ok: true, deduped: true });
         return;
+      }
+    }
+
+    // Fetching media is expensive and authenticated, so it happens here,
+    // strictly after admission and the dedup claim, never inside the gate.
+    let images: Array<{ storageId: string; mediaType: string }> = [];
+    let mediaError: string | undefined;
+    if (hasMedia) {
+      if (externalMessageId) {
+        const ingested = await ingestWhatsappImage(chatId, externalMessageId);
+        if (ingested.ok) images = [ingested.image];
+        else mediaError = ingested.reason;
+      } else {
+        // No message id, no way to address the Gateway's media endpoint.
+        // Surfaced to the agent rather than dropped silently.
+        mediaError = "could not fetch media: the gateway sent no message id";
       }
     }
 
@@ -69,6 +87,8 @@ export function createWhatsappRouter(): express.Router {
         conversationId,
         content: text,
         turnTag,
+        images,
+        mediaError,
         onThinking: (t) => broadcast("thinking", { conversationId, t }),
       });
       if (reply) {
