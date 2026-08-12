@@ -10,7 +10,7 @@ import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
 import { runAgentRuntime } from "./runtimes/index.js";
 import { EMPTY_USAGE, type UsageTotals } from "./usage.js";
 import { handleUserMessage } from "./interaction-agent.js";
-import { sendImessage } from "./sendblue.js";
+import { sendToConversation } from "./channels/outbound.js";
 import { ensureTrigger, getComposio, listConnectedToolkits } from "./composio.js";
 import { ensureWebhookSubscription } from "./composio-webhook.js";
 import { describeUserNow } from "./timezone-config.js";
@@ -307,10 +307,10 @@ async function dispatchProactiveNotice(summary: string): Promise<void> {
     content: `[proactive notice] ${summary}`,
     kind: "proactive",
   });
-  // handleUserMessage only sends iMessage from inside send_ack; the final
+  // handleUserMessage only sends from inside send_ack; the final
   // reply is the caller's responsibility.
   if (reply && reply !== "(no reply)") {
-    await sendImessage(phone, reply);
+    await sendToConversation(conversationId, reply);
     await convex.mutation(api.messages.send, {
       conversationId,
       role: "assistant",
@@ -319,7 +319,7 @@ async function dispatchProactiveNotice(summary: string): Promise<void> {
   } else {
     // IA stayed silent — fall back to the raw classifier summary so the
     // user still gets the notice; otherwise classification was a no-op.
-    await sendImessage(phone, summary);
+    await sendToConversation(conversationId, summary);
     await convex.mutation(api.messages.send, {
       conversationId,
       role: "assistant",

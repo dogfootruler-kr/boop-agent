@@ -7,6 +7,7 @@ import { validateImageHeader, MAX_IMAGE_BYTES, type ImageMediaType } from "./ima
 import { redactContactHandle, redactPhoneNumbers } from "./privacy.js";
 import { maybeHandleScriptedDemoReply } from "./scripted-demo-replies.js";
 import { verifySendblueWebhookSecret } from "./sendblue-webhook-auth.js";
+import { sendToConversation, startTypingForConversation } from "./channels/outbound.js";
 
 const API_BASE = "https://api.sendblue.com/api";
 const MAX_CHUNK = 2900;
@@ -52,6 +53,10 @@ function chunk(text: string, size = MAX_CHUNK): string[] {
   return out;
 }
 
+export function isSendblueConfigured(): boolean {
+  return Boolean(process.env.SENDBLUE_API_KEY && process.env.SENDBLUE_API_SECRET);
+}
+
 function headers(): Record<string, string> | null {
   const apiKey = process.env.SENDBLUE_API_KEY;
   const apiSecret = process.env.SENDBLUE_API_SECRET;
@@ -74,7 +79,17 @@ function normalizeE164(n: string | undefined): string | undefined {
   return trimmed;
 }
 
-export async function sendImessage(toNumber: string, text: string): Promise<void> {
+// Outbound formatting for the `sms` channel: iMessage renders no markdown, and
+// the gateway wants short parts. This is the `formatOutbound` half of the
+// channel adapter in `server/channels/sms.ts`.
+export function formatForImessage(text: string): string[] {
+  return chunk(stripMarkdown(text));
+}
+
+// Deliver one already-formatted part. Phone-number redaction is NOT done here:
+// it runs once in the shared outbound path, above per-channel formatting, so
+// that no channel adapter can skip it.
+export async function sendSendbluePart(toNumber: string, part: string): Promise<void> {
   const h = headers();
   if (!h) {
     console.warn("[sendblue] missing credentials — not sending");
@@ -87,36 +102,43 @@ export async function sendImessage(toNumber: string, text: string): Promise<void
     );
     return;
   }
+  const res = await fetch(`${API_BASE}/send-message`, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify({ number: toNumber, content: part, from_number: from }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(
+      `[sendblue] send failed ${res.status}: ${redactPhoneNumbers(body).slice(0, 500)}`,
+    );
+    if (body.includes("missing required parameter") && body.includes("from_number")) {
+      console.error(
+        `[sendblue] → Set SENDBLUE_FROM_NUMBER in .env.local to your Sendblue-provisioned number and restart the server.`,
+      );
+    } else if (body.includes("Cannot send messages to self")) {
+      console.error(
+        `[sendblue] → SENDBLUE_FROM_NUMBER is your personal cell. It must be the Sendblue-provisioned number (the one people text TO).`,
+      );
+    } else if (body.includes("This phone number is not defined")) {
+      console.error(
+        `[sendblue] → Sendblue doesn't recognize from_number=${redactContactHandle(from)}. Run \`npm run sendblue:sync\` to pull the correct one from \`sendblue lines\`, then restart the server.`,
+      );
+    }
+  } else {
+    console.log(`[sendblue] → sent ${part.length} chars to ${redactContactHandle(toNumber)}`);
+  }
+}
+
+// Direct gateway send, addressed by phone number rather than by Conversation
+// ID. Prefer `sendToConversation` from `server/channels/outbound.ts`: it is the
+// path that routes by channel. This remains for the scripted demo, which still
+// addresses the gateway directly.
+export async function sendImessage(toNumber: string, text: string): Promise<void> {
   // Intentional privacy guard: Boop should not deliver phone numbers back over
   // iMessage, even if an agent includes one in its final reply.
-  const plain = redactPhoneNumbers(stripMarkdown(text));
-  for (const part of chunk(plain)) {
-    const res = await fetch(`${API_BASE}/send-message`, {
-      method: "POST",
-      headers: h,
-      body: JSON.stringify({ number: toNumber, content: part, from_number: from }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(
-        `[sendblue] send failed ${res.status}: ${redactPhoneNumbers(body).slice(0, 500)}`,
-      );
-      if (body.includes("missing required parameter") && body.includes("from_number")) {
-        console.error(
-          `[sendblue] → Set SENDBLUE_FROM_NUMBER in .env.local to your Sendblue-provisioned number and restart the server.`,
-        );
-      } else if (body.includes("Cannot send messages to self")) {
-        console.error(
-          `[sendblue] → SENDBLUE_FROM_NUMBER is your personal cell. It must be the Sendblue-provisioned number (the one people text TO).`,
-        );
-      } else if (body.includes("This phone number is not defined")) {
-        console.error(
-          `[sendblue] → Sendblue doesn't recognize from_number=${redactContactHandle(from)}. Run \`npm run sendblue:sync\` to pull the correct one from \`sendblue lines\`, then restart the server.`,
-        );
-      }
-    } else {
-      console.log(`[sendblue] → sent ${part.length} chars to ${redactContactHandle(toNumber)}`);
-    }
+  for (const part of formatForImessage(redactPhoneNumbers(text))) {
+    await sendSendbluePart(toNumber, part);
   }
 }
 
@@ -280,7 +302,7 @@ export function createSendblueRouter(): express.Router {
       return;
     }
 
-    const stopTyping = startTypingLoop(from_number);
+    const stopTyping = startTypingForConversation(conversationId);
     try {
       const reply = await handleUserMessage({
         conversationId,
@@ -297,7 +319,7 @@ export function createSendblueRouter(): express.Router {
         console.log(
           `[turn ${turnTag}] → reply (${elapsed}s, ${reply.length} chars): ${JSON.stringify(replyPreview)}`,
         );
-        await sendImessage(from_number, reply);
+        await sendToConversation(conversationId, reply);
         await convex.mutation(api.messages.send, {
           conversationId,
           role: "assistant",

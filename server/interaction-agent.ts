@@ -14,7 +14,7 @@ import {
   setRuntimeProvider,
 } from "./runtime-config.js";
 import { broadcast } from "./broadcast.js";
-import { sendImessage } from "./sendblue.js";
+import { sendToConversation } from "./channels/outbound.js";
 import { defineRuntimeTool } from "./runtimes/tool.js";
 import { runAgentRuntime } from "./runtimes/index.js";
 import { runtimeText } from "./runtimes/types.js";
@@ -418,9 +418,8 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   const sendAck = async (message: string): Promise<void> => {
     const text = redactPhoneNumbers(message.trim());
     if (!text) return;
-    if (opts.conversationId.startsWith("sms:") && opts.kind !== "proactive") {
-      const number = opts.conversationId.slice(4);
-      await sendImessage(number, text);
+    if (opts.kind !== "proactive") {
+      await sendToConversation(opts.conversationId, text);
     }
     await convex.mutation(api.messages.send, {
       conversationId: opts.conversationId,

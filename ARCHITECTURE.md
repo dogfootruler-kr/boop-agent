@@ -191,6 +191,24 @@ Security model:
 
 ---
 
+### 10. Channels - `server/channels/`
+
+A Channel is a bidirectional messaging transport the user talks to Boop through.
+It is identified by a short key that is also the prefix of every Conversation ID belonging to it, so the Conversation ID is the routing key for everything outbound.
+Read `CONTEXT.md` for the vocabulary and `docs/adr/0001-channel-port-for-messaging-transports.md` for why this shape.
+
+- `registry.ts` - the `Channel` port (`key`, `formatOutbound`, `send`, `startTyping`) plus the key-to-adapter registry and `resolveChannel(conversationId)`.
+- `sms.ts` - the adapter for Apple iMessage, with Sendblue as its gateway. It registers only when Sendblue is configured, so an unconfigured channel resolves to nothing rather than to a broken adapter.
+- `outbound.ts` - `sendToConversation` and `startTypingForConversation`. Every send site routes through here, so none of them knows which channel it is talking on.
+
+Phone-number redaction runs in `sendToConversation`, above the adapter's `formatOutbound`, so no adapter can be written that skips it.
+
+Channels are deliberately **not** Integrations and are registered separately (`loadChannels()` next to `loadIntegrations()` in `server/index.ts`).
+An Integration is a capability an execution agent uses to get work done; a Channel is how the user reaches Boop at all.
+The dispatcher reads the integration registry only, so it never sees a Channel as spawnable.
+
+---
+
 ## Data model (Convex)
 
 Seven tables. Read `convex/schema.ts` for the exact shape.
@@ -228,7 +246,8 @@ Following a text from iMessage to reply, step by step:
      ↳ may call recall / write_memory
      ↳ may call spawn_agent → execution-agent runs, returns text
 5.  interaction-agent:  final text → broadcast + return
-6.  sendblue.ts:  sendImessage() chunks + sends
+6.  channels/outbound.ts:  sendToConversation() routes on the
+     conversation's channel prefix, redacts, formats, sends
 7.  interaction-agent:  save assistant msg to Convex
 8.  BACKGROUND: extract.ts pulls durable facts, writes memories
 9.  LATER: clean.ts decays scores, archives or prunes

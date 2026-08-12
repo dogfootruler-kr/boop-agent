@@ -7,6 +7,7 @@ import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
+import { loadChannels } from "./channels/registry.js";
 import { startCleanupLoop } from "./memory/clean.js";
 import { startAutomationLoop } from "./automations.js";
 import { startHeartbeatLoop } from "./heartbeat.js";
@@ -33,6 +34,9 @@ import { startImageCleanup } from "./images/clean.js";
 import { isPublicServerRequest, isTrustedLocalRequest } from "./local-access.js";
 
 async function main() {
+  // Channels are registered separately from Integrations: a Channel is how
+  // the user reaches Boop, not a capability the dispatcher can spawn.
+  await loadChannels();
   await loadIntegrations();
   startCleanupLoop();
   startAutomationLoop();
