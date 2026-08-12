@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
+import { createWhatsappRouter } from "./openwa/webhook.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
 import { loadChannels } from "./channels/registry.js";
@@ -138,6 +139,9 @@ async function main() {
   });
 
   app.use("/sendblue", createSendblueRouter());
+  // The `whatsapp` Channel's inbound path. Loopback-only until it is added to
+  // the public-path allowlist, which is where its tailnet restriction lands.
+  app.use("/whatsapp", createWhatsappRouter());
   app.use("/composio", createComposioRouter());
   app.use("/memory", createMemoryRouter());
   app.use("/browser", createBrowserRouter());
@@ -208,6 +212,7 @@ async function main() {
     console.log(`  health      GET  http://localhost:${port}/health`);
     console.log(`  chat        POST http://localhost:${port}/chat`);
     console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
+    console.log(`  whatsapp    POST http://localhost:${port}/whatsapp/webhook`);
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
   });
 

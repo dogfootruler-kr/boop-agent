@@ -9,9 +9,9 @@ boop-agent is a small distributed system disguised as a single-server app. Four 
 │                      EXPRESS + WS SERVER                        │
 │                                                                 │
 │   POST /sendblue/webhook   ──────►  Interaction Agent           │
-│   POST /chat                        (dispatcher, streams)       │
-│   WS /ws                                  │                     │
-│                                           │ spawn_agent         │
+│   POST /whatsapp/webhook   ──────►  (dispatcher, streams)       │
+│   POST /chat                              │                     │
+│   WS /ws                                  │ spawn_agent         │
 │                                           ▼                     │
 │                                    Execution Agent(s)           │
 │                                    (one per task)               │
@@ -213,6 +213,18 @@ Read `docs/adr/0002-inbound-trust-boundary.md` for why it sits on the tailnet.
 - `config.ts` - gateway URL, API key, session id, Allowlist, and the optional self-address override, read from local environment only. Allowlist entries may be written as E.164 or as raw JIDs and are normalized to Handles at load time.
 - `gateway.ts` - the whole HTTP surface: send a text, show a typing indication, look up a contact.
 - `handles.ts` - `resolveWhatsappHandle` and `admitWhatsappSender`, the sender half of inbound admission. A `@lid` costs a gateway contact lookup; an address that resolves to nothing is dropped and logged loudly, because normalization fails closed and failing closed is silent.
+- `webhook-auth.ts` - `deriveWhatsappWebhookSecret` and `verifyWhatsappWebhookSecret`. The signing secret is derived by HMAC-SHA256 from the gateway API key rather than chosen by a human, so registration and verification recompute the same value and nothing has to store it. Comparison is constant-time. Same shape as `server/sendblue-webhook-auth.ts`.
+- `inbound.ts` - `admitInboundWhatsappMessage`, the whole admission gate as one directly callable function returning accept-or-drop with a reason. Covered by `test/whatsapp-inbound.test.ts`.
+- `webhook.ts` - `POST /whatsapp/webhook`. It holds no policy: it calls the gate first and acts on the result.
+
+Inbound admission on the `whatsapp` Channel runs in this order, and the order is the security property: signature verification, sender resolution to a Handle, Allowlist check, dedup claim, persistence, agent spawn.
+The Allowlist check precedes the dedup claim, any Convex write, and any agent spawn.
+Group messages are rejected.
+Boop checks the Allowlist itself even though the gateway also filters at dispatch, because the security property must not depend on configuration living on a different machine.
+The `sms` channel deliberately has no Allowlist and accepts a message from anyone - read `docs/adr/0002-inbound-trust-boundary.md` before "fixing" that.
+
+The per-function test style asserts the admission *decision* but cannot assert its *position* in the handler.
+That gap is accepted deliberately, so the ordering is a code-review property: `server/openwa/webhook.ts` is kept short enough to read top to bottom.
 
 Channels are deliberately **not** Integrations and are registered separately (`loadChannels()` next to `loadIntegrations()` in `server/index.ts`).
 An Integration is a capability an execution agent uses to get work done; a Channel is how the user reaches Boop at all.
@@ -247,11 +259,12 @@ Indexes are tight — search through the schema to see what's supported.
 
 ## Message lifecycle
 
-Following a text from iMessage to reply, step by step:
+Following a text from a Channel to reply, step by step:
 
 ```
-1.  Sendblue POST /sendblue/webhook
-2.  sendblue.ts:  dedup + spawn handleUserMessage()
+1.  Gateway POST /sendblue/webhook or /whatsapp/webhook
+2.  sendblue.ts / openwa/webhook.ts:  admit, dedup, then
+     spawn handleUserMessage()
 3.  interaction-agent:  save user msg, fetch recent history
 4.  interaction-agent:  query Claude with memory + spawn tools
      ↳ may call recall / write_memory
