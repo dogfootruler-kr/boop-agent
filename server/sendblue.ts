@@ -260,8 +260,9 @@ export function createSendblueRouter(): express.Router {
     }
 
     if (message_handle) {
-      const { claimed } = await convex.mutation(api.sendblueDedup.claim, {
-        handle: message_handle,
+      const { claimed } = await convex.mutation(api.channelDedup.claim, {
+        channel: "sms",
+        externalMessageId: message_handle,
       });
       if (!claimed) {
         res.json({ ok: true, deduped: true });

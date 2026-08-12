@@ -632,7 +632,7 @@ boop-agent/
 │   ├── drafts.ts
 │   ├── memoryEvents.ts
 │   ├── usageRecords.ts            # Append-only per-call cost log
-│   └── sendblueDedup.ts
+│   └── channelDedup.ts
 ├── debug/                         # Dashboard: Dashboard / Agents / Automations / Memory / Events / Connections
 ├── scripts/
 │   ├── setup.ts                   # Interactive setup CLI

@@ -224,7 +224,7 @@ Seven tables. Read `convex/schema.ts` for the exact shape.
 | `automationRuns` | One row per automation run | runId, automationId, status, result, agentId |
 | `drafts` | Staged external actions | draftId, kind, summary, payload, status |
 | `consolidationRuns` | History of consolidation passes | runId, proposalsCount, mergedCount, prunedCount |
-| `sendblueDedup` | Webhook dedup by `message_handle` | handle, claimedAt |
+| `channelDedup` | Channel-agnostic webhook dedup, keyed by channel and external message ID | channel, externalMessageId, claimedAt |
 | `memoryEvents` | Append-only event log for the debug UI | eventType, conversationId, memoryId, data |
 | `settings` | Runtime overrides (model, browser settings, etc.) read by `server/runtime-config.ts` | key, value, updatedAt |
 
