@@ -118,6 +118,34 @@ describe("sendToConversation", () => {
     });
   });
 
+  it("strips markdown before delivering, since iMessage renders none", async () => {
+    configureSendblue();
+    await loadChannels();
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const text = [
+      "# Heading",
+      "**bold** and *italic* and `code`",
+      "```js",
+      "const x = 1;",
+      "```",
+      "[a link](https://example.com)",
+    ].join("\n");
+
+    await sendToConversation(`sms:${RECIPIENT}`, text);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const { content } = JSON.parse(String(init.body)) as { content: string };
+    expect(content).toBe(
+      ["Heading", "bold and italic and code", "const x = 1;", "", "a link (https://example.com)"].join("\n"),
+    );
+    expect(content).not.toContain("**");
+    expect(content).not.toContain("```");
+    expect(content).not.toContain("# Heading");
+  });
+
   it("redacts phone numbers from every part it delivers", async () => {
     configureSendblue();
     await loadChannels();
