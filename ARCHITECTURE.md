@@ -223,6 +223,11 @@ Group messages are rejected.
 Boop checks the Allowlist itself even though the gateway also filters at dispatch, because the security property must not depend on configuration living on a different machine.
 The `sms` channel deliberately has no Allowlist and accepts a message from anyone - read `docs/adr/0002-inbound-trust-boundary.md` before "fixing" that.
 
+In front of all of that sits a network boundary, in `server/local-access.ts`.
+`POST /whatsapp/webhook` is on the public-path allowlist **and** additionally restricted to loopback or tailnet source addresses: both, not either.
+Tailnet means Tailscale's `100.64.0.0/10` for IPv4 or `fd7a:115c:a1e0::/48` for IPv6, and the socket address decides, so a forwarding header anyone can write can only narrow the answer and never promote a caller onto the tailnet.
+`isTrustedLocalRequest` stays loopback-only, which is what keeps `/chat`, the agent retry endpoints, and the WebSocket off the tailnet.
+
 The per-function test style asserts the admission *decision* but cannot assert its *position* in the handler.
 That gap is accepted deliberately, so the ordering is a code-review property: `server/openwa/webhook.ts` is kept short enough to read top to bottom.
 

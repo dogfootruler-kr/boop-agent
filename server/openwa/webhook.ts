@@ -8,10 +8,11 @@
  * call is the first statement, and nothing above it touches Convex or starts
  * an agent.
  *
- * The path is additionally restricted to loopback or tailnet source addresses
- * in `server/index.ts`. Read `docs/adr/0002-inbound-trust-boundary.md`: the
- * signature is not on its own considered sufficient to put an agent, the
- * user's memory, and every connected integration behind.
+ * The path is on the public-path allowlist AND additionally restricted to
+ * loopback or tailnet source addresses, both in `server/local-access.ts`. Read
+ * `docs/adr/0002-inbound-trust-boundary.md`: the signature is not on its own
+ * considered sufficient to put an agent, the user's memory, and every
+ * connected integration behind.
  */
 import express from "express";
 import { api } from "../../convex/_generated/api.js";

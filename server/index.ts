@@ -139,8 +139,9 @@ async function main() {
   });
 
   app.use("/sendblue", createSendblueRouter());
-  // The `whatsapp` Channel's inbound path. Loopback-only until it is added to
-  // the public-path allowlist, which is where its tailnet restriction lands.
+  // The `whatsapp` Channel's inbound path. Reachable from loopback and from
+  // the tailnet only; `server/local-access.ts` holds that restriction, next to
+  // the public-path allowlist it is paired with.
   app.use("/whatsapp", createWhatsappRouter());
   app.use("/composio", createComposioRouter());
   app.use("/memory", createMemoryRouter());
