@@ -134,18 +134,6 @@ export async function sendSendbluePart(toNumber: string, part: string): Promise<
   }
 }
 
-// Direct gateway send, addressed by phone number rather than by Conversation
-// ID. Prefer `sendToConversation` from `server/channels/outbound.ts`: it is the
-// path that routes by channel. This remains for the scripted demo, which still
-// addresses the gateway directly.
-export async function sendImessage(toNumber: string, text: string): Promise<void> {
-  // Intentional privacy guard: Boop should not deliver phone numbers back over
-  // iMessage, even if an agent includes one in its final reply.
-  for (const part of formatForImessage(redactPhoneNumbers(text))) {
-    await sendSendbluePart(toNumber, part);
-  }
-}
-
 export async function sendTypingIndicator(toNumber: string): Promise<void> {
   const h = headers();
   if (!h) return;
@@ -232,15 +220,11 @@ export function createSendblueRouter(): express.Router {
     res.json({ ok: true });
 
     if (
-      await maybeHandleScriptedDemoReply(
-        {
-          conversationId,
-          content: textForLog,
-          fromNumber: from_number,
-          turnTag,
-        },
-        { sendImessage, sendTypingIndicator },
-      )
+      await maybeHandleScriptedDemoReply({
+        conversationId,
+        content: textForLog,
+        turnTag,
+      })
     ) {
       return;
     }

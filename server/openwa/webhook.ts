@@ -21,6 +21,7 @@ import { broadcast } from "../broadcast.js";
 import { sendToConversation, startTypingForConversation } from "../channels/outbound.js";
 import { handleUserMessage } from "../interaction-agent.js";
 import { redactContactHandle, redactPhoneNumbers } from "../privacy.js";
+import { maybeHandleScriptedDemoReply } from "../scripted-demo-replies.js";
 import { admitInboundWhatsappMessage, type WhatsappDropReason } from "./inbound.js";
 import { ingestWhatsappImage } from "./media.js";
 import { WHATSAPP_WEBHOOK_SECRET_HEADER } from "./webhook-auth.js";
@@ -80,6 +81,16 @@ export function createWhatsappRouter(): express.Router {
     // Answered before the turn runs: the Gateway would otherwise retry a
     // message that is already being worked on.
     res.json({ ok: true });
+
+    if (
+      await maybeHandleScriptedDemoReply({
+        conversationId,
+        content: text,
+        turnTag,
+      })
+    ) {
+      return;
+    }
 
     const stopTyping = startTypingForConversation(conversationId);
     try {
