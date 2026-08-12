@@ -3,7 +3,11 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { broadcast } from "./broadcast.js";
-import { validateImageHeader, MAX_IMAGE_BYTES, type ImageMediaType } from "./images/mime.js";
+import {
+  ingestImageFromResponse,
+  type ImageIngestResult,
+  type IngestedImage,
+} from "./images/ingest.js";
 import { redactContactHandle, redactPhoneNumbers } from "./privacy.js";
 import { maybeHandleScriptedDemoReply } from "./scripted-demo-replies.js";
 import { verifySendblueWebhookSecret } from "./sendblue-webhook-auth.js";
@@ -163,11 +167,11 @@ export function startTypingLoop(toNumber: string): () => void {
   return () => clearInterval(timer);
 }
 
-type IngestedImage = { storageId: string; mediaType: ImageMediaType };
-
-export async function ingestSendblueImage(
-  url: string,
-): Promise<{ ok: true; image: IngestedImage } | { ok: false; reason: string }> {
+// Sendblue's half of media ingest: fetch the CDN URL, no authentication
+// involved. The streaming size cap, the MIME check, and the Convex storage
+// upload are identical to WhatsApp's `ingestWhatsappImage` and live in the
+// shared helper, `server/images/ingest.ts`.
+export async function ingestSendblueImage(url: string): Promise<ImageIngestResult> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -177,69 +181,7 @@ export async function ingestSendblueImage(
   } catch (err) {
     return { ok: false, reason: `download failed: ${String(err)}` };
   }
-  if (!res.ok) {
-    return { ok: false, reason: `download failed: HTTP ${res.status}` };
-  }
-  const lenHeader = res.headers.get("content-length");
-  const contentLength = lenHeader ? Number(lenHeader) : undefined;
-  const check = validateImageHeader({
-    contentType: res.headers.get("content-type") ?? undefined,
-    contentLength,
-  });
-  if (!check.ok) {
-    res.body?.cancel().catch(() => undefined);
-    return { ok: false, reason: check.reason };
-  }
-  // Stream the body so we can abort early when the running total exceeds
-  // MAX_IMAGE_BYTES — content-length is often absent on CDN/redirect
-  // responses, and `await res.arrayBuffer()` would otherwise buffer the
-  // entire payload before any cap check fires.
-  let buf: ArrayBuffer;
-  try {
-    const reader = res.body?.getReader();
-    if (!reader) return { ok: false, reason: "download failed: no body" };
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_IMAGE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        return {
-          ok: false,
-          reason: `image too large: >${MAX_IMAGE_BYTES} bytes`,
-        };
-      }
-      chunks.push(value);
-    }
-    buf = new ArrayBuffer(total);
-    const view = new Uint8Array(buf);
-    let offset = 0;
-    for (const c of chunks) {
-      view.set(c, offset);
-      offset += c.byteLength;
-    }
-  } catch (err) {
-    return { ok: false, reason: `download failed: ${String(err)}` };
-  }
-
-  try {
-    const uploadUrl = await convex.mutation(api.messages.generateUploadUrl, {});
-    const upload = await fetch(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": check.mediaType },
-      body: buf,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!upload.ok) {
-      return { ok: false, reason: `upload failed: HTTP ${upload.status}` };
-    }
-    const { storageId } = (await upload.json()) as { storageId: string };
-    return { ok: true, image: { storageId, mediaType: check.mediaType } };
-  } catch (err) {
-    return { ok: false, reason: `upload failed: ${String(err)}` };
-  }
+  return ingestImageFromResponse(res);
 }
 
 export function createSendblueRouter(): express.Router {

@@ -216,6 +216,9 @@ Read `docs/adr/0002-inbound-trust-boundary.md` for why it sits on the tailnet.
 - `webhook-auth.ts` - `deriveWhatsappWebhookSecret` and `verifyWhatsappWebhookSecret`. The signing secret is derived by HMAC-SHA256 from the gateway API key rather than chosen by a human, so registration and verification recompute the same value and nothing has to store it. Comparison is constant-time. Same shape as `server/sendblue-webhook-auth.ts`.
 - `inbound.ts` - `admitInboundWhatsappMessage`, the whole admission gate as one directly callable function returning accept-or-drop with a reason. Covered by `test/whatsapp-inbound.test.ts`.
 - `webhook.ts` - `POST /whatsapp/webhook`. It holds no policy: it calls the gate first and acts on the result.
+- `media.ts` - `ingestWhatsappImage`, the WhatsApp half of inbound media ingest. OpenWA serves no unauthenticated media URL, so this makes its own authenticated request to the Gateway, addressed by chat and message ID, then hands the response to the shared helper below. Covered by `test/whatsapp-media.test.ts`.
+
+Media ingestion is deliberately not on the `Channel` port - see `docs/adr/0001-channel-port-for-messaging-transports.md`. Sendblue serves media from an unauthenticated CDN URL; `ingestSendblueImage` in `server/sendblue.ts` fetches it directly. Both Gateway-specific fetches delegate to `ingestImageFromResponse` in `server/images/ingest.ts` for the parts that are genuinely identical: the streaming size cap, the MIME check (`server/images/mime.ts`), and the upload to Convex storage. Inbound media stays images only on both channels.
 
 Inbound admission on the `whatsapp` Channel runs in this order, and the order is the security property: signature verification, sender resolution to a Handle, Allowlist check, dedup claim, persistence, agent spawn.
 The Allowlist check precedes the dedup claim, any Convex write, and any agent spawn.
