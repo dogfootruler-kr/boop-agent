@@ -83,6 +83,27 @@ export function parseConversationId(
   return { channelKey: conversationId.slice(0, idx), handle };
 }
 
+/** Human-readable Channel name for a prompt: "WhatsApp", never "whatsapp:". */
+const CHANNEL_DISPLAY_NAMES: Record<ChannelKey, string> = {
+  sms: "iMessage",
+  whatsapp: "WhatsApp",
+};
+
+/**
+ * The display name of the Channel a Conversation ID belongs to, derived from
+ * its prefix via `parseConversationId`.
+ *
+ * Null when the prefix is not a known channel key, which is expected for
+ * Conversation IDs that don't belong to a Channel at all (the debug UI has
+ * its own threads). This does not require the Channel to be registered: the
+ * name is derivable from the prefix alone, unlike `resolveChannel`.
+ */
+export function channelDisplayName(conversationId: string): string | null {
+  const parsed = parseConversationId(conversationId);
+  if (!parsed || !isChannelKey(parsed.channelKey)) return null;
+  return CHANNEL_DISPLAY_NAMES[parsed.channelKey];
+}
+
 /**
  * Resolve a Conversation ID to the Channel it belongs to and the Handle on it.
  *

@@ -15,6 +15,7 @@ import {
 } from "./runtime-config.js";
 import { broadcast } from "./broadcast.js";
 import { sendToConversation } from "./channels/outbound.js";
+import { channelDisplayName } from "./channels/registry.js";
 import { defineRuntimeTool } from "./runtimes/tool.js";
 import { runAgentRuntime } from "./runtimes/index.js";
 import { runtimeText } from "./runtimes/types.js";
@@ -25,13 +26,15 @@ import {
 } from "./images/content-blocks.js";
 import { redactPhoneNumbers } from "./privacy.js";
 
-const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
+const INTERACTION_SYSTEM = `You are Boop, a personal agent the user reaches through a messaging channel.
+
+{{CHANNEL}}
 
 You are a DISPATCHER, not a doer. Your job:
 1. Understand what the user wants.
 2. Decide: answer directly (quick facts, chit-chat, anything you already know) OR spawn_agent (real work that needs tools like email, calendar, web, etc.).
 3. When you spawn, give the agent a crisp, specific task — not the raw user message.
-4. When the agent returns, relay the result in YOUR voice, tightened for iMessage.
+4. When the agent returns, relay the result in YOUR voice.
 
 Tone: Warm, witty, concise. Write like you're texting a friend. No corporate voice. No bullet dumps unless the user asked for a list.
 
@@ -58,7 +61,7 @@ API access. That lack of access is the signal to call send_ack, then
 spawn_agent. Refusing or suggesting the user use another tool is a failure
 unless the spawned agent already tried and could not complete the task.
 
-Acknowledgment rule (iMessage UX):
+Acknowledgment rule:
 BEFORE every spawn_agent call, you MUST call send_ack first with a short
 1-sentence message. The user otherwise sees nothing for 10-30 seconds while
 the sub-agent works. Examples of good acks:
@@ -109,13 +112,13 @@ When relaying a sub-agent's answer:
   add, remove, paraphrase, or summarize URLs.
 - If the sub-agent did NOT include a Sources section, YOU DO NOT ADD ONE.
   Do not write "Sources: Lonely Planet, etc." No exceptions.
-- You may tighten the body for iMessage (shorter bullets, fewer emojis),
-  but the URLs are ground truth — don't touch them.
+- The URLs are ground truth - don't touch them, even while tightening the
+  rest of the reply.
 
 Phone-number privacy:
 - Never include phone numbers in user-facing replies, even if a tool or
   sub-agent includes one.
-- For iMessage/SMS lookups, identify threads by contact name, message text,
+- For message-thread lookups, identify threads by contact name, message text,
   timing, or "the matching thread" instead of by phone number.
 - If the user provides a phone number, you may use it to search, but do not
   echo it back.
@@ -179,15 +182,16 @@ Apple-only. Only skip Gmail when the user explicitly asks for local Apple data
 only or no email.
 
 Apple data (local, read-only):
-The optional "apple" integration reads iMessage texts, Apple Calendar events,
-Apple Reminders, and Apple Notes from the user's Mac. iMessage reads run from
-the local server with Full Disk Access; Apple Notes and Apple Reminders read
-from the local server with macOS Automation permission; Calendar uses the
-optional Apple bridge.
-When "apple" is available and the user asks about their texts/iMessages,
-calendar, reminders, or notes, spawn_agent with integrations ["apple"]. If it
-is not available, tell the user to enable Apple data in Settings. For iMessage,
-the app or process running Boop needs Full Disk Access on macOS. For
+The optional "apple" integration reads the user's local Messages history
+(their texts, via the Mac's Messages app), Apple Calendar events, Apple
+Reminders, and Apple Notes from the user's Mac. Messages reads run from the
+local server with Full Disk Access; Apple Notes and Apple Reminders read from
+the local server with macOS Automation permission; Calendar uses the optional
+Apple bridge.
+When "apple" is available and the user asks about their texts, calendar,
+reminders, or notes, spawn_agent with integrations ["apple"]. If it is not
+available, tell the user to enable Apple data in Settings. For local Messages
+reads, the app or process running Boop needs Full Disk Access on macOS. For
 Apple Notes or Reminders, macOS may ask for permission to let that app control
 the relevant Apple app.
 
@@ -231,9 +235,7 @@ information, integration action, file/system access, or verification beyond
 what you can see in the image, call spawn_agent and pass the relevant storage
 IDs to its imageRefs parameter so the sub-agent can see the image too. If the
 user sends a photo with no caption, ask a short clarifying question rather
-than guessing what they want.
-
-Format: Plain iMessage-friendly text. Markdown sparingly. Keep replies under ~400 chars when you can.`;
+than guessing what they want.`;
 
 interface HandleOpts {
   conversationId: string;
@@ -254,6 +256,30 @@ interface HandleOpts {
 
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * The single line naming the current Channel, injected into the system
+ * prompt every turn so Boop stops assuming the user is on iMessage.
+ *
+ * Falls back to a channel-neutral line for Conversation IDs that don't
+ * belong to a Channel at all, e.g. the debug UI's own threads.
+ */
+function channelLine(conversationId: string): string {
+  const name = channelDisplayName(conversationId);
+  return name
+    ? `The user is messaging you on ${name} right now.`
+    : "The user is messaging you through Boop's debug chat console right now.";
+}
+
+export function buildInteractionSystemPrompt(
+  conversationId: string,
+  integrations: string[],
+): string {
+  return INTERACTION_SYSTEM.replace("{{CHANNEL}}", channelLine(conversationId)).replace(
+    "{{INTEGRATIONS}}",
+    integrations.join(", ") || "(no integrations configured yet)",
+  );
 }
 
 function runtimeLabel(runtime: "claude" | "codex"): string {
@@ -350,17 +376,14 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
     .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
     .join("\n");
 
-  const systemPrompt = INTERACTION_SYSTEM.replace(
-    "{{INTEGRATIONS}}",
-    integrations.join(", ") || "(no integrations configured yet)",
-  );
+  const systemPrompt = buildInteractionSystemPrompt(opts.conversationId, integrations);
 
   const userText = opts.mediaError
     ? `[user sent images but they couldn't be downloaded: ${opts.mediaError}]\n${opts.content}`
     : opts.content;
   const promptText =
     opts.kind === "proactive"
-      ? `Standalone proactive notice. Write a concise user-facing iMessage from this notice only. Do not research, spawn agents, or continue any prior conversation.\n\n${userText}`
+      ? `Standalone proactive notice. Write a concise user-facing reply from this notice only. Do not research, spawn agents, or continue any prior conversation.\n\n${userText}`
       : historyBlock
         ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${userText}`
         : userText;
@@ -457,7 +480,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       "send_ack",
       `Send a short acknowledgment message to the user IMMEDIATELY, before a slow operation. Use this BEFORE spawn_agent so the user knows you heard them and are working on it. Keep it to ONE short sentence (ideally under 60 chars) with tone that matches the task. Examples: "On it — one sec 🔍", "Looking into it…", "Drafting now, hold tight.", "Let me check your calendar."`,
       {
-        message: z.string().describe("1 short sentence ack. No markdown. Emojis OK."),
+        message: z.string().describe("1 short sentence ack. Emojis OK."),
       },
       async (args) => {
         const text = args.message.trim();

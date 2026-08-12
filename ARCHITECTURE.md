@@ -36,7 +36,7 @@ The front door. One instance per user turn. Its job is to **decide**, not to do.
   - `boop-memory.recall(query)` — pull relevant memories.
   - `boop-memory.write_memory(content, segment, importance, tier?)` — persist a durable fact.
   - `boop-spawn.spawn_agent(task, integrations[], name?)` — kick off an execution agent.
-- Its system prompt drills the DISPATCHER rule: answer directly for chit-chat, spawn an agent for real work.
+- Its system prompt drills the DISPATCHER rule: answer directly for chit-chat, spawn an agent for real work. A single line names the current Channel each turn, so the agent doesn't assume iMessage when the conversation is on WhatsApp.
 - Replies route out through the Channel the conversation belongs to (`server/channels/`), which decides the formatting: markdown stripped and chunked to 2900 chars for iMessage, WhatsApp markup and ~65,000 for WhatsApp.
 
 ### 2. Execution agent — `server/execution-agent.ts`
@@ -45,7 +45,7 @@ Spawned per task. Ephemeral. One instance, one job, one result.
 
 - Gets the specific `task` the interaction agent wrote (not the raw user message).
 - Loads **only** the integrations named in the spawn call. That can include Composio toolkits or the optional local `browser` integration.
-- System prompt drills: iMessage-friendly output, draft-before-send for any external action.
+- System prompt drills: draft-before-send for any external action. A single line names the current Channel each turn, so the agent doesn't assume iMessage when the conversation is on WhatsApp.
 - Logs every `tool_use`, `tool_result`, and text block to Convex so the debug dashboard can replay it.
 - Runs with `permissionMode: bypassPermissions` — the interaction agent is the gatekeeper.
 - Returns a string. That string becomes a tool-result back to the interaction agent, which rewrites it in its own voice.
