@@ -109,6 +109,8 @@ export async function loadChannels(): Promise<void> {
   clearChannels();
   const { registerSmsChannel } = await import("./sms.js");
   registerSmsChannel();
+  const { registerWhatsappChannel } = await import("./whatsapp.js");
+  registerWhatsappChannel();
   const keys = listChannels().map((c) => c.key);
   console.log(
     `[channels] registered: ${keys.join(", ") || "(none - no messaging gateway is configured)"}`,

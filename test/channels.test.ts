@@ -11,18 +11,25 @@ import {
   startTypingForConversation,
 } from "../server/channels/outbound.js";
 
-const SENDBLUE_ENV = [
+const MANAGED_ENV = [
   "SENDBLUE_API_KEY",
   "SENDBLUE_API_SECRET",
   "SENDBLUE_FROM_NUMBER",
+  "WHATSAPP_GATEWAY_URL",
+  "WHATSAPP_API_KEY",
+  "WHATSAPP_SESSION_ID",
+  "WHATSAPP_ALLOWLIST",
 ] as const;
 
-const originalEnv = new Map(SENDBLUE_ENV.map((key) => [key, process.env[key]]));
+const originalEnv = new Map(MANAGED_ENV.map((key) => [key, process.env[key]]));
 
-// Placeholder numbers only - this is a public repo.
+// Placeholder numbers and hosts only - this is a public repo.
 const FROM_NUMBER = ["+", "1", "555", "000", "0100"].join("");
 const RECIPIENT = ["+", "1", "555", "000", "0101"].join("");
 const LEAKED_PHONE = ["+", "1", "555", "555", "0102"].join("");
+const WHATSAPP_GATEWAY_URL = "http://gateway.example:8080";
+// The Handle is E.164; the JID is what the adapter reconstructs to send.
+const RECIPIENT_JID = `${RECIPIENT.slice(1)}@c.us`;
 
 function configureSendblue(): void {
   process.env.SENDBLUE_API_KEY = "test-key";
@@ -36,14 +43,29 @@ function unconfigureSendblue(): void {
   delete process.env.SENDBLUE_FROM_NUMBER;
 }
 
+function configureWhatsapp(): void {
+  process.env.WHATSAPP_GATEWAY_URL = WHATSAPP_GATEWAY_URL;
+  process.env.WHATSAPP_API_KEY = "test-gateway-key";
+  process.env.WHATSAPP_SESSION_ID = "test-session";
+  process.env.WHATSAPP_ALLOWLIST = RECIPIENT;
+}
+
+function unconfigureWhatsapp(): void {
+  delete process.env.WHATSAPP_GATEWAY_URL;
+  delete process.env.WHATSAPP_API_KEY;
+  delete process.env.WHATSAPP_SESSION_ID;
+  delete process.env.WHATSAPP_ALLOWLIST;
+}
+
 beforeEach(() => {
   clearChannels();
+  unconfigureWhatsapp();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   clearChannels();
-  for (const key of SENDBLUE_ENV) {
+  for (const key of MANAGED_ENV) {
     const value = originalEnv.get(key);
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -63,9 +85,31 @@ describe("channel registry", () => {
 
   it("resolves an unconfigured channel to nothing", async () => {
     configureSendblue();
+    unconfigureWhatsapp();
     await loadChannels();
 
     expect(resolveChannel(`whatsapp:${RECIPIENT}`)).toBeNull();
+  });
+
+  it("resolves a whatsapp Conversation ID to the OpenWA adapter and its Handle", async () => {
+    configureSendblue();
+    configureWhatsapp();
+    await loadChannels();
+
+    const resolved = resolveChannel(`whatsapp:${RECIPIENT}`);
+
+    expect(resolved?.channel.key).toBe("whatsapp");
+    expect(resolved?.handle).toBe(RECIPIENT);
+    // Adding a channel must not cost the one already there.
+    expect(resolveChannel(`sms:${RECIPIENT}`)?.channel.key).toBe("sms");
+  });
+
+  it("registers no whatsapp channel when the OpenWA gateway is unconfigured", async () => {
+    unconfigureSendblue();
+    unconfigureWhatsapp();
+    await loadChannels();
+
+    expect(listChannels()).toEqual([]);
   });
 
   it("registers no sms channel when the Sendblue gateway is unconfigured", async () => {
@@ -202,5 +246,118 @@ describe("sendToConversation", () => {
 
     expect(delivered).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("the whatsapp channel", () => {
+  async function loadWithWhatsapp() {
+    configureSendblue();
+    configureWhatsapp();
+    await loadChannels();
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({ success: true }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  type FetchCall = [string | URL | Request, RequestInit?];
+
+  function urlOf(call: FetchCall): string {
+    return String(call[0]);
+  }
+
+  function bodyOf(call: FetchCall): Record<string, unknown> {
+    return JSON.parse(String(call[1]?.body)) as Record<string, unknown>;
+  }
+
+  it("sends to the reconstructed JID for the Handle in the Conversation ID", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    const delivered = await sendToConversation(`whatsapp:${RECIPIENT}`, "on my way");
+
+    expect(delivered).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const call = fetchMock.mock.calls[0];
+    expect(urlOf(call)).toBe(`${WHATSAPP_GATEWAY_URL}/api/sendText`);
+    expect((call[1]?.headers as Record<string, string>)["x-api-key"]).toBe("test-gateway-key");
+    expect(bodyOf(call)).toEqual({
+      to: RECIPIENT_JID,
+      content: "on my way",
+    });
+  });
+
+  it("redacts phone numbers from every part it delivers", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    await sendToConversation(`whatsapp:${RECIPIENT}`, `Call **${LEAKED_PHONE}** now`);
+
+    const contents = fetchMock.mock.calls.map((call) => bodyOf(call).content as string);
+    expect(contents.join("\n")).toBe("Call *[phone number hidden]* now");
+    expect(contents.join("\n")).not.toContain(LEAKED_PHONE);
+  });
+
+  it("translates to WhatsApp markup and keeps code blocks intact", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    const text = [
+      "# Heading",
+      "**bold** and *italic* and `code` and ~~gone~~",
+      "```js",
+      "const x = 1;",
+      "```",
+      "[a link](https://example.com)",
+    ].join("\n");
+
+    await sendToConversation(`whatsapp:${RECIPIENT}`, text);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(bodyOf(fetchMock.mock.calls[0]).content).toBe(
+      [
+        "*Heading*",
+        "*bold* and _italic_ and `code` and ~gone~",
+        "```",
+        "const x = 1;",
+        "```",
+        "a link (https://example.com)",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps a long reply in one message, unlike iMessage", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    const line = "x".repeat(1000);
+    await sendToConversation(`whatsapp:${RECIPIENT}`, Array(20).fill(line).join("\n"));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((bodyOf(fetchMock.mock.calls[0]).content as string).length).toBeGreaterThan(2900);
+  });
+
+  it("still splits a reply past what WhatsApp itself accepts", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    const line = "x".repeat(1000);
+    await sendToConversation(`whatsapp:${RECIPIENT}`, Array(70).fill(line).join("\n"));
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    for (const call of fetchMock.mock.calls) {
+      expect((bodyOf(call).content as string).length).toBeLessThanOrEqual(65_000);
+    }
+  });
+
+  it("turns the typing indication on for the Handle and off again when stopped", async () => {
+    const fetchMock = await loadWithWhatsapp();
+
+    const stopTyping = startTypingForConversation(`whatsapp:${RECIPIENT}`);
+    stopTyping();
+
+    expect(fetchMock.mock.calls.length).toBe(2);
+    for (const call of fetchMock.mock.calls) {
+      expect(urlOf(call)).toBe(`${WHATSAPP_GATEWAY_URL}/api/simulateTyping`);
+    }
+    expect(bodyOf(fetchMock.mock.calls[0])).toEqual({ to: RECIPIENT_JID, on: true });
+    expect(bodyOf(fetchMock.mock.calls[1])).toEqual({ to: RECIPIENT_JID, on: false });
   });
 });

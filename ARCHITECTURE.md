@@ -37,7 +37,7 @@ The front door. One instance per user turn. Its job is to **decide**, not to do.
   - `boop-memory.write_memory(content, segment, importance, tier?)` — persist a durable fact.
   - `boop-spawn.spawn_agent(task, integrations[], name?)` — kick off an execution agent.
 - Its system prompt drills the DISPATCHER rule: answer directly for chit-chat, spawn an agent for real work.
-- Replies stream through Sendblue back to iMessage (markdown stripped, chunked to 2900 chars).
+- Replies route out through the Channel the conversation belongs to (`server/channels/`), which decides the formatting: markdown stripped and chunked to 2900 chars for iMessage, WhatsApp markup and ~65,000 for WhatsApp.
 
 ### 2. Execution agent — `server/execution-agent.ts`
 
@@ -199,9 +199,20 @@ Read `CONTEXT.md` for the vocabulary and `docs/adr/0001-channel-port-for-messagi
 
 - `registry.ts` - the `Channel` port (`key`, `formatOutbound`, `send`, `startTyping`) plus the key-to-adapter registry and `resolveChannel(conversationId)`.
 - `sms.ts` - the adapter for Apple iMessage, with Sendblue as its gateway. It registers only when Sendblue is configured, so an unconfigured channel resolves to nothing rather than to a broken adapter.
+- `whatsapp.ts` - the adapter for WhatsApp, with OpenWA as its gateway. Same rule: no gateway configured means the channel is absent, not broken. Outbound formatting lives here because it is about WhatsApp the destination rather than OpenWA the client - markdown is translated into WhatsApp's own markup, code blocks are kept, and the chunk threshold is ~65,000 characters so a long reply arrives whole.
 - `outbound.ts` - `sendToConversation` and `startTypingForConversation`. Every send site routes through here, so none of them knows which channel it is talking on.
 
 Phone-number redaction runs in `sendToConversation`, above the adapter's `formatOutbound`, so no adapter can be written that skips it.
+
+### 10a. OpenWA gateway - `server/openwa/`
+
+The WhatsApp gateway, kept behind the adapter and deliberately thin: OpenWA is a reverse-engineered WhatsApp client rather than an official API, so it is expected to be replaced.
+Read `docs/adr/0002-inbound-trust-boundary.md` for why it sits on the tailnet.
+
+- `addresses.ts` - pure address algebra with no dependencies. A Handle is E.164 and is the only form that appears in a Conversation ID; the JID is reconstructed at send time and is never stored or compared. This is the file a WhatsApp address-format change lands in, and `test/whatsapp-handles.test.ts` drives it from a table.
+- `config.ts` - gateway URL, API key, session id, Allowlist, and the optional self-address override, read from local environment only. Allowlist entries may be written as E.164 or as raw JIDs and are normalized to Handles at load time.
+- `gateway.ts` - the whole HTTP surface: send a text, show a typing indication, look up a contact.
+- `handles.ts` - `resolveWhatsappHandle` and `admitWhatsappSender`, the sender half of inbound admission. A `@lid` costs a gateway contact lookup; an address that resolves to nothing is dropped and logged loudly, because normalization fails closed and failing closed is silent.
 
 Channels are deliberately **not** Integrations and are registered separately (`loadChannels()` next to `loadIntegrations()` in `server/index.ts`).
 An Integration is a capability an execution agent uses to get work done; a Channel is how the user reaches Boop at all.
