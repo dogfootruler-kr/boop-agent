@@ -8,6 +8,8 @@ const fields = {
   restart: document.getElementById("restart"),
   dashboardFrame: document.getElementById("dashboard-frame"),
   dashboardEmpty: document.getElementById("dashboard-empty"),
+  launchAtLogin: document.getElementById("launch-at-login"),
+  launchAtLoginNote: document.getElementById("launch-at-login-note"),
 };
 let lastStatus = null;
 
@@ -144,7 +146,17 @@ function render(status) {
     hideDashboard();
   }
 
+  renderLaunchAtLogin(status);
   postStatusToDashboard(status);
+}
+
+function renderLaunchAtLogin(status) {
+  if (!fields.launchAtLogin || fields.launchAtLogin.dataset.pending) return;
+  fields.launchAtLogin.checked = Boolean(status.launchAtLogin);
+  fields.launchAtLoginNote.textContent =
+    status.launchAtLogin && status.launchAtLoginState === "requires-approval"
+      ? "Needs approval in System Settings → Login Items"
+      : "";
 }
 
 async function refreshStatus() {
@@ -278,3 +290,25 @@ if (runtimeButton) {
     window.boopDesktop.showRuntimeFolder();
   });
 }
+
+fields.launchAtLogin.addEventListener("change", async (event) => {
+  const desired = event.target.checked;
+  fields.launchAtLogin.disabled = true;
+  fields.launchAtLogin.dataset.pending = "1";
+  try {
+    const status = await window.boopDesktop.setLaunchAtLogin(desired);
+    if (status) render(status);
+  } catch {
+    // Fall through to the refresh below so the checkbox lands on whatever the OS
+    // actually recorded, rather than staying on the user's optimistic click.
+  } finally {
+    fields.launchAtLogin.disabled = false;
+    delete fields.launchAtLogin.dataset.pending;
+    refreshStatus();
+  }
+});
+
+// The OS is the source of truth for this setting: it can change out from under
+// the app (e.g. the user removes Boop from Login Items in System Settings), so
+// re-read it whenever the window regains focus rather than trusting a cached value.
+window.addEventListener("focus", refreshStatus);
