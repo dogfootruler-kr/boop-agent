@@ -177,6 +177,20 @@ describe("ensureWhatsappWebhook", () => {
     });
   });
 
+  it("rebinds the webhook when the session has been re-paired under a new name", async () => {
+    const gateway = stubGateway();
+    await ensureWhatsappWebhook();
+
+    // A re-pair on the Gateway side arrives here as a changed session name; a
+    // webhook still bound to the old one would deliver nothing, silently.
+    process.env.WHATSAPP_SESSION_ID = "boop-repaired";
+    const repaired = await ensureWhatsappWebhook();
+
+    expect(repaired.status).toBe("updated");
+    expect(gateway.webhooks).toHaveLength(1);
+    expect(gateway.webhooks[0]).toMatchObject({ sessionId: "boop-repaired" });
+  });
+
   it("re-registers when the signing secret no longer matches the Gateway's", async () => {
     const gateway = stubGateway();
     await ensureWhatsappWebhook();

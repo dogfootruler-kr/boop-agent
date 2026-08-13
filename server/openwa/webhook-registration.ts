@@ -111,6 +111,7 @@ interface GatewayWebhook {
   readonly events: string[];
   readonly headers: Record<string, string>;
   readonly filters?: { allowedChatIds?: string[]; ignoreGroups?: boolean };
+  readonly sessionId?: string;
 }
 
 /** OpenWA answers `{ success, data }`. */
@@ -309,11 +310,14 @@ async function listWebhooks(config: WhatsappConfig): Promise<ListResult> {
  * Boop will re-send the same registration on every startup. That is noisier
  * than necessary and still idempotent, which is the right way round: the
  * alternative is assuming a secret matches and going quietly deaf when it does
- * not.
+ * not. The session id gets the same treatment: a webhook left bound to a
+ * previous session name delivers nothing, so when the operator has named a
+ * session, an entry that does not echo that name back never compares equal.
  */
 function matchesDesired(existing: GatewayWebhook, desired: DesiredWebhook): boolean {
   if (existing.url !== desired.url) return false;
   if (!sameSet(existing.events, desired.events)) return false;
+  if (desired.sessionId && existing.sessionId !== desired.sessionId) return false;
 
   const secret = headerValue(existing.headers, WHATSAPP_WEBHOOK_SECRET_HEADER);
   if (secret !== desired.headers[WHATSAPP_WEBHOOK_SECRET_HEADER]) return false;
@@ -462,6 +466,7 @@ function readWebhook(value: unknown): GatewayWebhook | null {
           ignoreGroups: filters.ignoreGroups === true,
         }
       : undefined,
+    sessionId: typeof value.sessionId === "string" ? value.sessionId : undefined,
   };
 }
 
