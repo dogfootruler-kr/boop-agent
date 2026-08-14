@@ -15,6 +15,15 @@ import { convex } from "../convex-client.js";
 import { sendToConversation } from "./outbound.js";
 
 /**
+ * How often to retry recording a message that already went out. The record
+ * feeds the dashboard and the agent's own conversation history, so it is worth
+ * a few attempts; but the send has happened either way, so after these the
+ * failure is logged rather than thrown as if delivery itself had failed.
+ */
+const RECORD_ATTEMPTS = 3;
+const RECORD_RETRY_BASE_MS = 500;
+
+/**
  * Send `content` on the Conversation's Channel and, only if it went out,
  * record it as Boop's own message.
  *
@@ -32,10 +41,29 @@ export async function deliverAssistantMessage(
     );
     return false;
   }
-  await convex.mutation(api.messages.send, {
-    conversationId,
-    role: "assistant",
-    content,
-  });
+  // From here the message HAS been delivered, so the answer is true no matter
+  // what happens to the record: a recording failure surfacing as a thrown
+  // "delivery failed" would be the inverse of the lie this module exists to
+  // prevent.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await convex.mutation(api.messages.send, {
+        conversationId,
+        role: "assistant",
+        content,
+      });
+      break;
+    } catch (err) {
+      if (attempt >= RECORD_ATTEMPTS) {
+        console.error(
+          `[channels] ${conversationId}: message was delivered but recording it failed ` +
+            `${attempt} times - the dashboard and the agent's history are missing it`,
+          err,
+        );
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * RECORD_RETRY_BASE_MS));
+    }
+  }
   return true;
 }

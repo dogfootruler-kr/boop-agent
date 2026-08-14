@@ -266,6 +266,43 @@ describe("sendToConversation", () => {
     }
   });
 
+  it("still reports delivered when a later part fails after an earlier one went out", async () => {
+    configureSendblue();
+    await loadChannels();
+    const fetchMock = vi
+      .fn(async () => new Response("{}", { status: 200 }))
+      .mockImplementationOnce(async () => new Response("{}", { status: 200 }))
+      .mockImplementationOnce(async () => {
+        throw new Error("network down");
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Long enough to split into multiple parts, so the second send can fail
+    // after the first reached the user.
+    const line = "x".repeat(1000);
+    const delivered = await sendToConversation(`sms:${RECIPIENT}`, [line, line, line, line].join("\n"));
+
+    // The user is looking at the first part, so the message counts as
+    // delivered and gets recorded; the remaining parts are not attempted.
+    expect(delivered).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    errorSpy.mockRestore();
+  });
+
+  it("propagates a failure on the first part, since nothing reached the user", async () => {
+    configureSendblue();
+    await loadChannels();
+    const fetchMock = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sendToConversation(`sms:${RECIPIENT}`, "on my way")).rejects.toThrow(
+      "network down",
+    );
+  });
+
   it("shows a typing indication to the Handle from the Conversation ID", async () => {
     configureSendblue();
     await loadChannels();

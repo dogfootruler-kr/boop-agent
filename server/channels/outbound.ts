@@ -42,8 +42,26 @@ export async function sendToConversation(
   // rewrites markup, and `+1 555 **000** 0101` becomes a whole phone number
   // the moment an adapter strips those markers.
   const safe = redactPhoneNumbersThroughMarkup(text);
-  for (const part of target.channel.formatOutbound(safe)) {
-    await target.channel.send(target.handle, redactPhoneNumbersThroughMarkup(part));
+  const parts = target.channel.formatOutbound(safe);
+  let sent = 0;
+  for (const part of parts) {
+    try {
+      await target.channel.send(target.handle, redactPhoneNumbersThroughMarkup(part));
+    } catch (err) {
+      // Before anything went out, the error can propagate: nothing reached the
+      // user, so nothing should be recorded. Once a part has been delivered,
+      // "not delivered" would be the bigger lie - the user is looking at the
+      // start of this message - so the failure is logged and the message still
+      // counts as delivered for recording purposes.
+      if (sent === 0) throw err;
+      console.error(
+        `[channels] ${conversationId}: part ${sent + 1}/${parts.length} failed after ` +
+          `${sent} delivered - recording the message as delivered anyway`,
+        err,
+      );
+      break;
+    }
+    sent += 1;
   }
   return true;
 }
