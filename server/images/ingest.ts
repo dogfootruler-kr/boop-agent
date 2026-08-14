@@ -39,6 +39,7 @@ export type ImageIngestResult =
  */
 export async function ingestImageFromResponse(res: Response): Promise<ImageIngestResult> {
   if (!res.ok) {
+    res.body?.cancel().catch(() => undefined);
     return { ok: false, reason: `download failed: HTTP ${res.status}` };
   }
   const lenHeader = res.headers.get("content-length");
