@@ -181,7 +181,9 @@ export default defineSchema({
     channel: v.string(),
     externalMessageId: v.string(),
     claimedAt: v.number(),
-  }).index("by_channel_external_id", ["channel", "externalMessageId"]),
+  })
+    .index("by_channel_external_id", ["channel", "externalMessageId"])
+    .index("by_claimed_at", ["claimedAt"]),
 
   drafts: defineTable({
     draftId: v.string(),
