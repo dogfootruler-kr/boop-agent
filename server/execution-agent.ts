@@ -9,6 +9,7 @@ import {
 import { createDraftStagingTools } from "./draft-tools.js";
 import { EMPTY_USAGE, type UsageTotals } from "./usage.js";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
+import { channelDisplayName } from "./channels/registry.js";
 import { runAgentRuntime } from "./runtimes/index.js";
 import { buildPromptWithImages, fetchStoredBytes } from "./images/content-blocks.js";
 
@@ -63,6 +64,8 @@ export function redactToolInputForLog(toolName: string, input: unknown): unknown
 
 const EXECUTION_SYSTEM = `You are a focused background worker for the user.
 
+{{CHANNEL}}
+
 Your job:
 1. Perform the task you were given, end to end.
 2. Use your tools — WebSearch, WebFetch, and any integrations loaded for this spawn — to investigate and act.
@@ -80,8 +83,8 @@ Local browser:
 - After browser_request_login, stop and tell the user what to do next. Do not claim the task is complete until they confirm they logged in.
 
 Apple data:
-- If the "apple" integration is loaded, its tools return read-only local Apple data from the user's Mac. iMessage reads run from the local server with Full Disk Access; Apple Notes and Apple Reminders read from the local server with macOS Automation permission; Apple Calendar uses the optional Apple bridge. They never modify anything.
-- Never include phone numbers in your response. For iMessage/SMS lookups, refer to contact names, message text, timing, or "the matching thread" instead of phone numbers.
+- If the "apple" integration is loaded, its tools return read-only local Apple data from the user's Mac. Local Messages reads run from the local server with Full Disk Access; Apple Notes and Apple Reminders read from the local server with macOS Automation permission; Apple Calendar uses the optional Apple bridge. They never modify anything.
+- Never include phone numbers in your response. For message-thread lookups, refer to contact names, message text, timing, or "the matching thread" instead of phone numbers.
 
 MANDATORY: for any task that used WebSearch or WebFetch, end your response with
 a "Sources:" section listing the ACTUAL URLs you fetched or found. Example:
@@ -96,14 +99,32 @@ output to the user verbatim, so if you don't include URLs, the user won't see
 any.
 
 Style:
-- Optimize for iMessage delivery: short sentences, bullets over paragraphs, no tables.
-- Prefer markdown with **bold** keywords and • bullets.
-- Under 500 words unless explicitly asked for more.
+- Favor brevity: short sentences, bullets over long paragraphs, and no more length than the task actually needs.
 - If you can't complete something, say why in one sentence.
 
 Safety:
 - Anything that sends a message, creates an event, or takes an external action: call save_draft with a JSON payload instead of the real send/create tool. Return the summary so the interaction agent can show it to the user.
 - Only the interaction agent's send_draft tool commits. You never commit.`;
+
+/**
+ * The single line naming the current Channel, injected into the system
+ * prompt every turn so a spawned agent stops assuming the user is on
+ * iMessage. Automation runs with no Conversation ID get a channel-neutral
+ * line instead.
+ */
+function channelLine(conversationId: string | undefined): string {
+  if (!conversationId) {
+    return "The user reaches Boop through one of its messaging channels.";
+  }
+  const name = channelDisplayName(conversationId);
+  return name
+    ? `The user is messaging Boop on ${name} right now.`
+    : "The user is messaging Boop through its debug chat console right now.";
+}
+
+export function buildExecutionSystemPrompt(conversationId?: string): string {
+  return EXECUTION_SYSTEM.replace("{{CHANNEL}}", channelLine(conversationId));
+}
 
 export interface SpawnOptions {
   task: string;
@@ -187,7 +208,7 @@ export async function spawnExecutionAgent(opts: SpawnExecutionAgentOpts): Promis
     });
     const result = await runAgentRuntime(runtimeConfig, {
       prompt: executionPrompt,
-      systemPrompt: EXECUTION_SYSTEM,
+      systemPrompt: buildExecutionSystemPrompt(opts.conversationId),
       claudeMcpServers: mcpServers,
       tools: runtimeTools,
       allowedTools,

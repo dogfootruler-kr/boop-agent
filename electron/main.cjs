@@ -6,6 +6,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const isMac = process.platform === "darwin";
+const supportsLaunchAtLogin = isMac || process.platform === "win32";
 const productName = "Boop";
 const mutableRuntimeItems = [
   ".env",
@@ -57,6 +58,8 @@ const status = {
   phoneNumber: "",
   runtimeRoot: "",
   lastMessage: "",
+  launchAtLogin: false,
+  launchAtLoginState: supportsLaunchAtLogin ? "not-registered" : "unsupported",
 };
 
 function desktopDataRoot() {
@@ -296,8 +299,26 @@ function plainStatus(value) {
   return value.charAt(0).toUpperCase() + value.slice(1).replace(/-/g, " ");
 }
 
+function readLaunchAtLogin() {
+  if (!supportsLaunchAtLogin) return { launchAtLogin: false, launchAtLoginState: "unsupported" };
+  try {
+    const settings = app.getLoginItemSettings();
+    return {
+      launchAtLogin: settings.openAtLogin,
+      launchAtLoginState: settings.status || (settings.openAtLogin ? "enabled" : "not-registered"),
+    };
+  } catch {
+    return { launchAtLogin: false, launchAtLoginState: "not-registered" };
+  }
+}
+
+function setLaunchAtLogin(enabled) {
+  if (!supportsLaunchAtLogin) return;
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
+}
+
 function setStatus(partial) {
-  Object.assign(status, connectionStatus(), partial, { runtimeRoot });
+  Object.assign(status, connectionStatus(), partial, { runtimeRoot, ...readLaunchAtLogin() });
   const ready =
     status.server === "running" &&
     status.convex === "running" &&
@@ -796,7 +817,7 @@ function restartBoop() {
   setTimeout(startBoop, 700);
 }
 
-ipcMain.handle("boop:get-status", () => status);
+ipcMain.handle("boop:get-status", () => ({ ...status, ...readLaunchAtLogin() }));
 ipcMain.handle("boop:start", async () => {
   await startBoop();
   return status;
@@ -819,6 +840,10 @@ ipcMain.handle("boop:open-dashboard", () => {
   return status.dashboardUrl;
 });
 ipcMain.handle("boop:show-runtime-folder", () => shell.openPath(runtimeRoot));
+ipcMain.handle("boop:set-launch-at-login", (_event, enabled) => {
+  setLaunchAtLogin(enabled);
+  return { ...status, ...readLaunchAtLogin() };
+});
 
 app.whenReady().then(() => {
   runtimeRoot = getRuntimeRoot();

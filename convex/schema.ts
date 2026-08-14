@@ -177,10 +177,13 @@ export default defineSchema({
     .index("by_automation_id", ["automationId"])
     .index("by_enabled", ["enabled"]),
 
-  sendblueDedup: defineTable({
-    handle: v.string(),
+  channelDedup: defineTable({
+    channel: v.string(),
+    externalMessageId: v.string(),
     claimedAt: v.number(),
-  }).index("by_handle", ["handle"]),
+  })
+    .index("by_channel_external_id", ["channel", "externalMessageId"])
+    .index("by_claimed_at", ["claimedAt"]),
 
   drafts: defineTable({
     draftId: v.string(),

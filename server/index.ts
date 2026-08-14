@@ -5,8 +5,11 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
+import { createWhatsappRouter } from "./openwa/webhook.js";
+import { ensureWhatsappWebhook } from "./openwa/webhook-registration.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
+import { loadChannels } from "./channels/registry.js";
 import { startCleanupLoop } from "./memory/clean.js";
 import { startAutomationLoop } from "./automations.js";
 import { startHeartbeatLoop } from "./heartbeat.js";
@@ -33,6 +36,9 @@ import { startImageCleanup } from "./images/clean.js";
 import { isPublicServerRequest, isTrustedLocalRequest } from "./local-access.js";
 
 async function main() {
+  // Channels are registered separately from Integrations: a Channel is how
+  // the user reaches Boop, not a capability the dispatcher can spawn.
+  await loadChannels();
   await loadIntegrations();
   startCleanupLoop();
   startAutomationLoop();
@@ -134,6 +140,10 @@ async function main() {
   });
 
   app.use("/sendblue", createSendblueRouter());
+  // The `whatsapp` Channel's inbound path. Reachable from loopback and from
+  // the tailnet only; `server/local-access.ts` holds that restriction, next to
+  // the public-path allowlist it is paired with.
+  app.use("/whatsapp", createWhatsappRouter());
   app.use("/composio", createComposioRouter());
   app.use("/memory", createMemoryRouter());
   app.use("/browser", createBrowserRouter());
@@ -204,7 +214,14 @@ async function main() {
     console.log(`  health      GET  http://localhost:${port}/health`);
     console.log(`  chat        POST http://localhost:${port}/chat`);
     console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
+    console.log(`  whatsapp    POST http://localhost:${port}/whatsapp/webhook`);
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
+
+    // Tell the WhatsApp gateway where to deliver inbound messages, once the
+    // port it will be told about is actually accepting connections. Fired and
+    // forgotten on purpose: it never rejects, it is silent when WhatsApp is
+    // unconfigured, and a gateway that is down must not stop Boop starting.
+    void ensureWhatsappWebhook({ port });
   });
 
   const signalExitCodes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;

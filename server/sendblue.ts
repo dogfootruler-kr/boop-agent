@@ -3,10 +3,16 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { broadcast } from "./broadcast.js";
-import { validateImageHeader, MAX_IMAGE_BYTES, type ImageMediaType } from "./images/mime.js";
+import {
+  ingestImageFromResponse,
+  type ImageIngestResult,
+  type IngestedImage,
+} from "./images/ingest.js";
 import { redactContactHandle, redactPhoneNumbers } from "./privacy.js";
 import { maybeHandleScriptedDemoReply } from "./scripted-demo-replies.js";
 import { verifySendblueWebhookSecret } from "./sendblue-webhook-auth.js";
+import { startTypingForConversation } from "./channels/outbound.js";
+import { deliverAssistantMessage } from "./channels/delivery.js";
 
 const API_BASE = "https://api.sendblue.com/api";
 const MAX_CHUNK = 2900;
@@ -25,8 +31,55 @@ export function extractSendblueMediaUrls(
   return [...urls];
 }
 
+/** A GFM table separator row, e.g. `| --- | --- |` or `--- | ---`. */
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function splitTableRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+/**
+ * Render a markdown table as plain-text `header: value` records instead of
+ * raw `| --- |` pipes, which iMessage has no way to render as a grid.
+ *
+ * This is the code guarantee for tables that `stripMarkdown` alone never
+ * provided: it only strips emphasis, fences, headings, and links, so a table
+ * passed through unchanged used to arrive on iMessage as literal pipe syntax.
+ */
+function stripMarkdownTables(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const headerLine = lines[i];
+    const separatorLine = lines[i + 1];
+    if (
+      headerLine.includes("|") &&
+      separatorLine !== undefined &&
+      TABLE_SEPARATOR_RE.test(separatorLine)
+    ) {
+      const headers = splitTableRow(headerLine);
+      i += 2;
+      const records: string[] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        const cells = splitTableRow(lines[i]);
+        records.push(headers.map((h, idx) => `${h}: ${cells[idx] ?? ""}`).join("\n"));
+        i += 1;
+      }
+      out.push(records.join("\n\n"));
+      continue;
+    }
+    out.push(headerLine);
+    i += 1;
+  }
+  return out.join("\n");
+}
+
 function stripMarkdown(text: string): string {
-  return text
+  return stripMarkdownTables(text)
     .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?|```/g, ""))
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/\*(.+?)\*/g, "$1")
@@ -52,6 +105,10 @@ function chunk(text: string, size = MAX_CHUNK): string[] {
   return out;
 }
 
+export function isSendblueConfigured(): boolean {
+  return Boolean(process.env.SENDBLUE_API_KEY && process.env.SENDBLUE_API_SECRET);
+}
+
 function headers(): Record<string, string> | null {
   const apiKey = process.env.SENDBLUE_API_KEY;
   const apiSecret = process.env.SENDBLUE_API_SECRET;
@@ -74,7 +131,17 @@ function normalizeE164(n: string | undefined): string | undefined {
   return trimmed;
 }
 
-export async function sendImessage(toNumber: string, text: string): Promise<void> {
+// Outbound formatting for the `sms` channel: iMessage renders no markdown, and
+// the gateway wants short parts. This is the `formatOutbound` half of the
+// channel adapter in `server/channels/sms.ts`.
+export function formatForImessage(text: string): string[] {
+  return chunk(stripMarkdown(text));
+}
+
+// Deliver one already-formatted part. Phone-number redaction is NOT done here:
+// it runs once in the shared outbound path, above per-channel formatting, so
+// that no channel adapter can skip it.
+export async function sendSendbluePart(toNumber: string, part: string): Promise<void> {
   const h = headers();
   if (!h) {
     console.warn("[sendblue] missing credentials — not sending");
@@ -87,36 +154,31 @@ export async function sendImessage(toNumber: string, text: string): Promise<void
     );
     return;
   }
-  // Intentional privacy guard: Boop should not deliver phone numbers back over
-  // iMessage, even if an agent includes one in its final reply.
-  const plain = redactPhoneNumbers(stripMarkdown(text));
-  for (const part of chunk(plain)) {
-    const res = await fetch(`${API_BASE}/send-message`, {
-      method: "POST",
-      headers: h,
-      body: JSON.stringify({ number: toNumber, content: part, from_number: from }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
+  const res = await fetch(`${API_BASE}/send-message`, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify({ number: toNumber, content: part, from_number: from }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(
+      `[sendblue] send failed ${res.status}: ${redactPhoneNumbers(body).slice(0, 500)}`,
+    );
+    if (body.includes("missing required parameter") && body.includes("from_number")) {
       console.error(
-        `[sendblue] send failed ${res.status}: ${redactPhoneNumbers(body).slice(0, 500)}`,
+        `[sendblue] → Set SENDBLUE_FROM_NUMBER in .env.local to your Sendblue-provisioned number and restart the server.`,
       );
-      if (body.includes("missing required parameter") && body.includes("from_number")) {
-        console.error(
-          `[sendblue] → Set SENDBLUE_FROM_NUMBER in .env.local to your Sendblue-provisioned number and restart the server.`,
-        );
-      } else if (body.includes("Cannot send messages to self")) {
-        console.error(
-          `[sendblue] → SENDBLUE_FROM_NUMBER is your personal cell. It must be the Sendblue-provisioned number (the one people text TO).`,
-        );
-      } else if (body.includes("This phone number is not defined")) {
-        console.error(
-          `[sendblue] → Sendblue doesn't recognize from_number=${redactContactHandle(from)}. Run \`npm run sendblue:sync\` to pull the correct one from \`sendblue lines\`, then restart the server.`,
-        );
-      }
-    } else {
-      console.log(`[sendblue] → sent ${part.length} chars to ${redactContactHandle(toNumber)}`);
+    } else if (body.includes("Cannot send messages to self")) {
+      console.error(
+        `[sendblue] → SENDBLUE_FROM_NUMBER is your personal cell. It must be the Sendblue-provisioned number (the one people text TO).`,
+      );
+    } else if (body.includes("This phone number is not defined")) {
+      console.error(
+        `[sendblue] → Sendblue doesn't recognize from_number=${redactContactHandle(from)}. Run \`npm run sendblue:sync\` to pull the correct one from \`sendblue lines\`, then restart the server.`,
+      );
     }
+  } else {
+    console.log(`[sendblue] → sent ${part.length} chars to ${redactContactHandle(toNumber)}`);
   }
 }
 
@@ -141,11 +203,11 @@ export function startTypingLoop(toNumber: string): () => void {
   return () => clearInterval(timer);
 }
 
-type IngestedImage = { storageId: string; mediaType: ImageMediaType };
-
-export async function ingestSendblueImage(
-  url: string,
-): Promise<{ ok: true; image: IngestedImage } | { ok: false; reason: string }> {
+// Sendblue's half of media ingest: fetch the CDN URL, no authentication
+// involved. The streaming size cap, the MIME check, and the Convex storage
+// upload are identical to WhatsApp's `ingestWhatsappImage` and live in the
+// shared helper, `server/images/ingest.ts`.
+export async function ingestSendblueImage(url: string): Promise<ImageIngestResult> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -155,69 +217,7 @@ export async function ingestSendblueImage(
   } catch (err) {
     return { ok: false, reason: `download failed: ${String(err)}` };
   }
-  if (!res.ok) {
-    return { ok: false, reason: `download failed: HTTP ${res.status}` };
-  }
-  const lenHeader = res.headers.get("content-length");
-  const contentLength = lenHeader ? Number(lenHeader) : undefined;
-  const check = validateImageHeader({
-    contentType: res.headers.get("content-type") ?? undefined,
-    contentLength,
-  });
-  if (!check.ok) {
-    res.body?.cancel().catch(() => undefined);
-    return { ok: false, reason: check.reason };
-  }
-  // Stream the body so we can abort early when the running total exceeds
-  // MAX_IMAGE_BYTES — content-length is often absent on CDN/redirect
-  // responses, and `await res.arrayBuffer()` would otherwise buffer the
-  // entire payload before any cap check fires.
-  let buf: ArrayBuffer;
-  try {
-    const reader = res.body?.getReader();
-    if (!reader) return { ok: false, reason: "download failed: no body" };
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_IMAGE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        return {
-          ok: false,
-          reason: `image too large: >${MAX_IMAGE_BYTES} bytes`,
-        };
-      }
-      chunks.push(value);
-    }
-    buf = new ArrayBuffer(total);
-    const view = new Uint8Array(buf);
-    let offset = 0;
-    for (const c of chunks) {
-      view.set(c, offset);
-      offset += c.byteLength;
-    }
-  } catch (err) {
-    return { ok: false, reason: `download failed: ${String(err)}` };
-  }
-
-  try {
-    const uploadUrl = await convex.mutation(api.messages.generateUploadUrl, {});
-    const upload = await fetch(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": check.mediaType },
-      body: buf,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!upload.ok) {
-      return { ok: false, reason: `upload failed: HTTP ${upload.status}` };
-    }
-    const { storageId } = (await upload.json()) as { storageId: string };
-    return { ok: true, image: { storageId, mediaType: check.mediaType } };
-  } catch (err) {
-    return { ok: false, reason: `upload failed: ${String(err)}` };
-  }
+  return ingestImageFromResponse(res);
 }
 
 export function createSendblueRouter(): express.Router {
@@ -238,8 +238,9 @@ export function createSendblueRouter(): express.Router {
     }
 
     if (message_handle) {
-      const { claimed } = await convex.mutation(api.sendblueDedup.claim, {
-        handle: message_handle,
+      const { claimed } = await convex.mutation(api.channelDedup.claim, {
+        channel: "sms",
+        externalMessageId: message_handle,
       });
       if (!claimed) {
         res.json({ ok: true, deduped: true });
@@ -267,20 +268,16 @@ export function createSendblueRouter(): express.Router {
     res.json({ ok: true });
 
     if (
-      await maybeHandleScriptedDemoReply(
-        {
-          conversationId,
-          content: textForLog,
-          fromNumber: from_number,
-          turnTag,
-        },
-        { sendImessage, sendTypingIndicator },
-      )
+      await maybeHandleScriptedDemoReply({
+        conversationId,
+        content: textForLog,
+        turnTag,
+      })
     ) {
       return;
     }
 
-    const stopTyping = startTypingLoop(from_number);
+    const stopTyping = startTypingForConversation(conversationId);
     try {
       const reply = await handleUserMessage({
         conversationId,
@@ -297,12 +294,9 @@ export function createSendblueRouter(): express.Router {
         console.log(
           `[turn ${turnTag}] → reply (${elapsed}s, ${reply.length} chars): ${JSON.stringify(replyPreview)}`,
         );
-        await sendImessage(from_number, reply);
-        await convex.mutation(api.messages.send, {
-          conversationId,
-          role: "assistant",
-          content: reply,
-        });
+        // Recorded only if it went out: a reply nobody received must not
+        // appear on the dashboard as one the user got.
+        await deliverAssistantMessage(conversationId, reply);
       } else {
         console.log(`[turn ${turnTag}] → (no reply)`);
       }

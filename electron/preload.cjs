@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("boopDesktop", {
   checkWebhook: () => ipcRenderer.invoke("boop:check-webhook"),
   openDashboard: () => ipcRenderer.invoke("boop:open-dashboard"),
   showRuntimeFolder: () => ipcRenderer.invoke("boop:show-runtime-folder"),
+  setLaunchAtLogin: (enabled) => ipcRenderer.invoke("boop:set-launch-at-login", enabled),
   onStatus: (callback) => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("boop-status", listener);

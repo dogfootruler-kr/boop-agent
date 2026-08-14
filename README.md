@@ -43,13 +43,14 @@ Built on:
 ## What you get
 
 - **iMessage in / iMessage out** via Sendblue (with signed inbound requests, typing indicators, and webhook dedup).
+- **Optional WhatsApp channel** via a self-hosted [OpenWA](https://github.com/open-wa/wa-automate-nodejs) gateway on your tailnet - allowlisted senders only, same agent and memory, no public exposure. Setup: [docs/whatsapp-setup.md](./docs/whatsapp-setup.md).
 - **Sendblue CLI integration** — `npm run dev` auto-registers the inbound webhook for you every restart (no re-pasting into the dashboard when free ngrok rotates your URL).
 - **Dispatcher + workers** pattern: a lean interaction agent decides what to do, spawns focused sub-agents that actually do the work.
 - **Pure dispatcher** — the interaction agent has only memory + spawn + automation + draft tools. Web access, files, and integrations are explicitly denied to it; sub-agents get `WebSearch` / `WebFetch` / the integrations.
 - **Tiered memory** (short / long / permanent) with post-turn extraction, decay, and cleaning.
 - **Vector search** for recall with a local BGE-large fallback, or optional Voyage/OpenAI embeddings.
 - **Memory consolidation** — a daily 3-phase adversarial pipeline (proposer → adversary → judge) that merges duplicates, resolves contradictions, and prunes noise. Uses the configured runtime, with provider-specific model defaults. Runs every 24h by default, also triggerable manually via `POST /consolidate`.
-- **Automations** — the agent can schedule recurring work from a text ("every morning at 8 summarize my calendar") and push results back to iMessage.
+- **Automations** — the agent can schedule recurring work from a text ("every morning at 8 summarize my calendar") and push results back to the conversation the automation was created in, on whichever channel that is.
 - **Draft-and-send** — any external action stages a draft first; the agent only commits when the user confirms.
 - **Heartbeat + retry** — stuck agents auto-fail, debug dashboard can retry.
 - **Composio-powered integrations** — one API key unlocks 1000+ toolkits. Connect Gmail, Slack, GitHub, Linear, Notion, Drive, HubSpot, etc. with a click from the debug dashboard. Composio handles OAuth + token refresh.
@@ -179,9 +180,9 @@ Text your Sendblue-provisioned number from a **different** phone. The agent repl
   <img src="assets/boop-app-icon.png" alt="Boop desktop app icon" width="96" />
 </p>
 
-Boop also has an experimental dedicated desktop app for people who want to launch it from the Dock instead of keeping a terminal open. The app starts the same stack as `npm run dev`, embeds the debug dashboard when everything is ready, and gives you start, stop, restart, and server-status controls directly in the app. The dashboard's Connection header is where you can see the running server, Convex, dashboard, tunnel, Sendblue webhook registration, Convex URL, and the Sendblue number people should text.
+Boop also has an experimental dedicated desktop app for people who want to launch it from the Dock instead of keeping a terminal open. The app starts the same stack as `npm run dev`, embeds the debug dashboard when everything is ready, and gives you start, stop, restart, and server-status controls directly in the app, plus a "Launch Boop at login" toggle (macOS). The dashboard's Connection header is where you can see the running server, Convex, dashboard, tunnel, Sendblue webhook registration, Convex URL, and the Sendblue number people should text.
 
-**Important:** `npm run setup` does not build or install the desktop app. It configures the checkout you are standing in: it creates or updates `.env.local`, walks through the runtime choice, configures Sendblue, creates or reuses the Convex deployment, generates Convex files, and offers optional local browser support. You still need to run setup at least once before Boop can run. If you want the installed app to run by itself, use `npm run desktop:setup`; that command runs the same interactive setup inside the app's runtime folder.
+**Important:** `npm run setup` does not build or install the desktop app. It configures the checkout you are standing in: it creates or updates `.env.local`, walks through the runtime choice, configures Sendblue (and optionally the WhatsApp channel), creates or reuses the Convex deployment, generates Convex files, and offers optional local browser support. You still need to run setup at least once before Boop can run. If you want the installed app to run by itself, use `npm run desktop:setup`; that command runs the same interactive setup inside the app's runtime folder.
 
 ```bash
 npm run desktop:setup  # recommended: setup app runtime, build app, optionally copy to /Applications
@@ -192,7 +193,7 @@ npm run desktop:dist   # build unsigned distributables
 
 | Command | What happens | Installs the app? |
 |---|---|---|
-| `npm run setup` | Configures this checkout for terminal/dev use. Writes `.env.local`, configures Sendblue, sets up Convex, generates Convex files, and can install optional browser support. | No |
+| `npm run setup` | Configures this checkout for terminal/dev use. Writes `.env.local`, configures Sendblue (and optionally the WhatsApp channel), sets up Convex, generates Convex files, and can install optional browser support. | No |
 | `npm run desktop:setup` | Prepares the app runtime folder, runs the same interactive setup there, builds the app, and on macOS offers to copy `Boop.app` to `/Applications`. | Yes, if you accept the `/Applications` prompt |
 | `npm run desktop:dev` | Experimental developer runner. Opens the desktop app from this checkout and uses this checkout's setup files. | No |
 | `npm run desktop:pack` | Creates an unsigned app bundle under `dist/` for local testing. | No, it only builds |
@@ -346,7 +347,7 @@ Visit `http://localhost:5173` for the debug dashboard (chat, agents, memory, eve
 - **Integrations** are provided by [Composio](https://composio.dev/?utm_source=chris&utm_medium=youtube&utm_campaign=collab). The dispatcher names toolkits by slug (`spawn_agent(integrations: ["gmail"])`); `server/composio.ts` opens a toolkit-scoped Composio session per spawn and wraps its tools as an MCP server. No per-integration code to write.
 - **Local browser use** is a separate optional integration named `browser`. It appears to the dispatcher only after you enable it in Settings, and it controls a persistent local Chrome profile through Patchright.
 
-Deep dive: [ARCHITECTURE.md](./ARCHITECTURE.md). Adding your own tools: [INTEGRATIONS.md](./INTEGRATIONS.md).
+Deep dive: [ARCHITECTURE.md](./ARCHITECTURE.md). Adding your own tools: [INTEGRATIONS.md](./INTEGRATIONS.md). WhatsApp channel setup: [docs/whatsapp-setup.md](./docs/whatsapp-setup.md).
 
 ---
 
@@ -420,6 +421,8 @@ Everything lives in `.env.local` (auto-created by `npm run setup`). See `.env.ex
 | `CONVEX_URL` | optional | Server-only Convex URL override for non-Vite deployments. Leave unset locally to avoid Convex CLI ambiguity warnings. |
 | `SENDBLUE_API_KEY` / `SENDBLUE_API_SECRET` | yes | From your Sendblue dashboard. |
 | `SENDBLUE_FROM_NUMBER` | yes | Your Sendblue-provisioned number. |
+| `WHATSAPP_GATEWAY_URL` / `WHATSAPP_API_KEY` / `WHATSAPP_SESSION_ID` / `WHATSAPP_ALLOWLIST` / `WHATSAPP_SELF_ADDRESS` / `BOOP_TAILNET_ADDRESS` | optional | Enable the WhatsApp channel via a self-hosted OpenWA gateway on your tailnet. Leave blank and the channel is simply absent. See [docs/whatsapp-setup.md](./docs/whatsapp-setup.md). |
+| `BOOP_PROACTIVE_CHANNEL` | no | Which channel proactive notices go out on: `sms` (iMessage, the default) or `whatsapp`. See [docs/whatsapp-setup.md](./docs/whatsapp-setup.md). |
 | `BOOP_RUNTIME` | no | `claude` by default. Set `codex` to use local `codex app-server` with the ChatGPT/Codex account from `codex login`. |
 | `BOOP_MODEL` | no | Default `claude-sonnet-4-6`. Used as the fallback when no runtime override is set. The user can switch the model at runtime from iMessage ("use opus", "switch to sonnet") via the `set_model` self-tool — that override is stored in the Convex `settings` table and takes precedence over this env var. |
 | `BOOP_CODEX_MODEL` / `BOOP_CODEX_REASONING_EFFORT` | no | Codex defaults when `BOOP_RUNTIME=codex`. Defaults: `gpt-5.5` and `medium`. |
@@ -584,6 +587,8 @@ boop-agent/
 ├── server/
 │   ├── index.ts                   # Express + WS + HTTP routes
 │   ├── sendblue.ts                # iMessage webhook, reply, typing indicator
+│   ├── channels/                  # Channel port + adapters (sms, whatsapp) + outbound routing
+│   ├── openwa/                    # OpenWA gateway: WhatsApp webhook, admission, registration
 │   ├── interaction-agent.ts       # Dispatcher
 │   ├── execution-agent.ts         # Sub-agent runner
 │   ├── runtime-config.ts          # Claude/Codex runtime selection + model defaults
@@ -632,7 +637,7 @@ boop-agent/
 │   ├── drafts.ts
 │   ├── memoryEvents.ts
 │   ├── usageRecords.ts            # Append-only per-call cost log
-│   └── sendblueDedup.ts
+│   └── channelDedup.ts
 ├── debug/                         # Dashboard: Dashboard / Agents / Automations / Memory / Events / Connections
 ├── scripts/
 │   ├── setup.ts                   # Interactive setup CLI

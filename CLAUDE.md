@@ -6,6 +6,20 @@ When working on Convex code, **always read `convex/_generated/ai/guidelines.md` 
 Convex agent skills for common tasks can be installed by running `npx convex ai-files install`.
 <!-- convex-ai-end -->
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on the fork `phoenix-error/boop-agent`, driven via `gh-axi` with `-R` pinned on every call. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## Pre-commit checks (this is a public repo)
 
 Before staging or committing **any** file, scan it for personal or sensitive data. Once it lands in git history it's effectively permanent — even after rewriting history, GitHub keeps orphaned commit SHAs reachable for weeks.

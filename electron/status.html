@@ -161,6 +161,43 @@
         line-height: 1.5;
         overflow-wrap: anywhere;
       }
+
+      .launch-at-login {
+        -webkit-app-region: no-drag;
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 7px;
+        background: rgba(24, 24, 27, 0.9);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+        font-size: 12px;
+        color: #d4d4d8;
+      }
+
+      .launch-at-login[hidden] {
+        display: none;
+      }
+
+      .launch-at-login label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+      }
+
+      .launch-at-login input {
+        cursor: pointer;
+      }
+
+      .launch-at-login-note {
+        color: #a1a1aa;
+      }
     </style>
   </head>
   <body>
@@ -184,6 +221,13 @@
           </section>
         </div>
       </main>
+      <div class="launch-at-login">
+        <label for="launch-at-login">
+          <input type="checkbox" id="launch-at-login" />
+          Launch Boop at login
+        </label>
+        <span class="launch-at-login-note" id="launch-at-login-note"></span>
+      </div>
     </div>
 
     <script src="./status.js"></script>

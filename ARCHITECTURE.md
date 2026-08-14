@@ -9,9 +9,9 @@ boop-agent is a small distributed system disguised as a single-server app. Four 
 │                      EXPRESS + WS SERVER                        │
 │                                                                 │
 │   POST /sendblue/webhook   ──────►  Interaction Agent           │
-│   POST /chat                        (dispatcher, streams)       │
-│   WS /ws                                  │                     │
-│                                           │ spawn_agent         │
+│   POST /whatsapp/webhook   ──────►  (dispatcher, streams)       │
+│   POST /chat                              │                     │
+│   WS /ws                                  │ spawn_agent         │
 │                                           ▼                     │
 │                                    Execution Agent(s)           │
 │                                    (one per task)               │
@@ -36,8 +36,8 @@ The front door. One instance per user turn. Its job is to **decide**, not to do.
   - `boop-memory.recall(query)` — pull relevant memories.
   - `boop-memory.write_memory(content, segment, importance, tier?)` — persist a durable fact.
   - `boop-spawn.spawn_agent(task, integrations[], name?)` — kick off an execution agent.
-- Its system prompt drills the DISPATCHER rule: answer directly for chit-chat, spawn an agent for real work.
-- Replies stream through Sendblue back to iMessage (markdown stripped, chunked to 2900 chars).
+- Its system prompt drills the DISPATCHER rule: answer directly for chit-chat, spawn an agent for real work. A single line names the current Channel each turn, so the agent doesn't assume iMessage when the conversation is on WhatsApp.
+- Replies route out through the Channel the conversation belongs to (`server/channels/`), which decides the formatting: markdown stripped and chunked to 2900 chars for iMessage, WhatsApp markup and ~65,000 for WhatsApp.
 
 ### 2. Execution agent — `server/execution-agent.ts`
 
@@ -45,7 +45,7 @@ Spawned per task. Ephemeral. One instance, one job, one result.
 
 - Gets the specific `task` the interaction agent wrote (not the raw user message).
 - Loads **only** the integrations named in the spawn call. That can include Composio toolkits or the optional local `browser` integration.
-- System prompt drills: iMessage-friendly output, draft-before-send for any external action.
+- System prompt drills: draft-before-send for any external action. A single line names the current Channel each turn, so the agent doesn't assume iMessage when the conversation is on WhatsApp.
 - Logs every `tool_use`, `tool_result`, and text block to Convex so the debug dashboard can replay it.
 - Runs with `permissionMode: bypassPermissions` — the interaction agent is the gatekeeper.
 - Returns a string. That string becomes a tool-result back to the interaction agent, which rewrites it in its own voice.
@@ -81,7 +81,7 @@ How it runs:
 - **`server/automations.ts`** starts a 30-second poll (`startAutomationLoop`) when the server boots.
 - On each tick it loads enabled automations from Convex, finds ones whose `nextRunAt` is ≤ now, and fires each one in parallel.
 - Firing = `spawnExecutionAgent({ task, integrations, conversationId, name: "auto:..." })` — the same sub-agent system the interaction agent uses.
-- The result is written as an `automationRun` row, and (if `notifyConversationId` points at an `sms:+...` conversation) pushed back out via Sendblue so the user sees it in iMessage.
+- The result is written as an `automationRun` row, and (if the automation has a `notifyConversationId`) delivered on whichever Channel that conversation belongs to, so an automation created over WhatsApp reports back over WhatsApp. It is stored as an assistant message only if it was delivered.
 - `nextRunAt` is recomputed with `croner` and stored.
 
 The four MCP tools exposed to the interaction agent (`server/automation-tools.ts`):
@@ -191,13 +191,69 @@ Security model:
 
 ---
 
+### 10. Channels - `server/channels/`
+
+A Channel is a bidirectional messaging transport the user talks to Boop through.
+It is identified by a short key that is also the prefix of every Conversation ID belonging to it, so the Conversation ID is the routing key for everything outbound.
+Read `CONTEXT.md` for the vocabulary and `docs/adr/0001-channel-port-for-messaging-transports.md` for why this shape.
+
+- `registry.ts` - the `Channel` port (`key`, `formatOutbound`, `send`, `startTyping`) plus the key-to-adapter registry and `resolveChannel(conversationId)`.
+- `sms.ts` - the adapter for Apple iMessage, with Sendblue as its gateway. It registers only when Sendblue is configured, so an unconfigured channel resolves to nothing rather than to a broken adapter.
+- `whatsapp.ts` - the adapter for WhatsApp, with OpenWA as its gateway. Same rule: no gateway configured means the channel is absent, not broken. Outbound formatting lives here because it is about WhatsApp the destination rather than OpenWA the client - markdown is translated into WhatsApp's own markup, code blocks are kept, and the chunk threshold is ~65,000 characters so a long reply arrives whole.
+- `outbound.ts` - `sendToConversation` and `startTypingForConversation`. Every send site routes through here, so none of them knows which channel it is talking on.
+- `delivery.ts` - `deliverAssistantMessage`: send, and record the message in Convex only if it actually went out. A conversation whose channel is absent delivered nothing, and storing it anyway would show the debug dashboard a message the user never received.
+- `proactive.ts` - the one configured Conversation Boop reaches the user on when it starts the conversation itself, from `BOOP_USER_PHONE` and `BOOP_PROACTIVE_CHANNEL` (blank means `sms`). Everything else outbound already has a Conversation ID to answer on.
+
+Phone-number redaction runs in `sendToConversation`, above the adapter's `formatOutbound`, so no adapter can be written that skips it.
+It runs on both sides of formatting, because those are different guarantees: before, the reply is whole, so a number a chunk boundary would split is still one number; after, the text is what `Channel.send` is about to put on the wire, and formatting is exactly what turns `+1 555 **000** 0101` back into a phone number by removing the markers `redactPhoneNumbers` relied on to not see one.
+
+### 10a. OpenWA gateway - `server/openwa/`
+
+The WhatsApp gateway, kept behind the adapter and deliberately thin: OpenWA is a reverse-engineered WhatsApp client rather than an official API, so it is expected to be replaced.
+Read `docs/adr/0002-inbound-trust-boundary.md` for why it sits on the tailnet.
+
+- `addresses.ts` - pure address algebra with no dependencies. A Handle is E.164 and is the only form that appears in a Conversation ID; the JID is reconstructed at send time and is never stored or compared. This is the file a WhatsApp address-format change lands in, and `test/whatsapp-handles.test.ts` drives it from a table.
+- `config.ts` - gateway URL, API key, session id, Allowlist, and the optional self-address override, read from local environment only. Allowlist entries may be written as E.164 or as raw JIDs and are normalized to Handles at load time.
+- `gateway.ts` - the whole HTTP surface: send a text, show a typing indication, look up a contact.
+- `handles.ts` - `resolveWhatsappHandle` and `admitWhatsappSender`, the sender half of inbound admission. A `@lid` costs a gateway contact lookup; an address that resolves to nothing is dropped and logged loudly, because normalization fails closed and failing closed is silent.
+- `webhook-auth.ts` - `deriveWhatsappWebhookSecret` and `verifyWhatsappWebhookSecret`. The signing secret is derived by HMAC-SHA256 from the gateway API key rather than chosen by a human, so registration and verification recompute the same value and nothing has to store it. Comparison is constant-time. Same shape as `server/sendblue-webhook-auth.ts`.
+- `inbound.ts` - `admitInboundWhatsappMessage`, the whole admission gate as one directly callable function returning accept-or-drop with a reason. Covered by `test/whatsapp-inbound.test.ts`.
+- `webhook.ts` - `POST /whatsapp/webhook`. It holds no policy: it calls the gate first and acts on the result. Once admitted and past the dedup claim, it calls `ingestWhatsappImage` when the admitted message carries media, before spawning the agent turn.
+- `media.ts` - `ingestWhatsappImage`, the WhatsApp half of inbound media ingest. OpenWA serves no unauthenticated media URL, so this makes its own authenticated request to the Gateway, addressed by chat and message ID, then hands the response to the shared helper below. Covered by `test/whatsapp-media.test.ts`.
+- `tailnet.ts` - `discoverSelfTailnetAddress`, working out Boop's own address on the tailnet so OpenWA knows where to deliver inbound messages. Asks the LOCAL Tailscale node (`tailscale status --json`) only, never the internet, and sanity-checks the result with `isTailnetAddress`. An explicit `BOOP_TAILNET_ADDRESS` override skips the query entirely. `npm run setup` calls this and fails loudly with an actionable message, not a stack trace, when Tailscale is unavailable - the alternative is the operator finding out when their first WhatsApp message vanishes. Covered by `test/whatsapp-tailnet.test.ts`, with the Tailscale invocation stubbed via an injectable runner. This file only discovers the address; `webhook-registration.ts` is what hands it to the Gateway.
+- `webhook-registration.ts` - `ensureWhatsappWebhook`, called once from `server/index.ts` after the port is listening. It tells the Gateway where to deliver inbound messages, using the discovered tailnet address and the derived signing secret, and it configures the Gateway's own dispatch filters to drop groups and anyone off the Allowlist. Those filters save traffic and are not the security boundary: `inbound.ts` checks the Allowlist itself on every call and stays authoritative, because a security property must not depend on configuration living on a machine Boop neither starts nor supervises. Registration is idempotent by reconciling against what the Gateway reports it already holds, keyed by a stable webhook id, so a restart sends nothing and a changed address, rotated key, or changed session name updates in place rather than adding a second webhook. Nothing here throws: WhatsApp being unconfigured is silent, and a Gateway that is down at startup is logged and survived. It also reads and logs the Gateway's WhatsApp session state at startup, which is the only place an un-paired session becomes visible: WhatsApp un-pairs a linked device on its own when the phone stays offline too long, and from every other angle Boop looks healthy and simply stops receiving. There is deliberately no dashboard surface for it, so the log carries the diagnosis and not just the symptom. Covered by `test/whatsapp-webhook-registration.test.ts` against a stateful stubbed Gateway.
+
+Media ingestion is deliberately not on the `Channel` port - see `docs/adr/0001-channel-port-for-messaging-transports.md`. Sendblue serves media from an unauthenticated CDN URL; `ingestSendblueImage` in `server/sendblue.ts` fetches it directly. Both Gateway-specific fetches delegate to `ingestImageFromResponse` in `server/images/ingest.ts` for the parts that are genuinely identical: the streaming size cap, the MIME check (`server/images/mime.ts`), and the upload to Convex storage. Inbound media stays images only on both channels.
+
+`admitInboundWhatsappMessage` notices that a message carries an image (the Gateway's `type: "image"`) and carries `chatId` and `hasMedia` through on the admitted message, but never fetches the bytes itself - that would be expensive, and this function has to stay cheap enough to run on every call. The actual fetch happens in `webhook.ts`, strictly after admission and the dedup claim, matching where `ingestSendblueImage` runs in `server/sendblue.ts`. A failed fetch does not drop the message: it is surfaced to the agent as `mediaError` rather than silently swallowed, the same contract `handleUserMessage` already has for Sendblue.
+
+Inbound admission on the `whatsapp` Channel runs in this order, and the order is the security property: signature verification, sender resolution to a Handle, Allowlist check, dedup claim, persistence, agent spawn.
+The Allowlist check precedes the dedup claim, any Convex write, and any agent spawn.
+Group messages are rejected.
+Boop checks the Allowlist itself even though the gateway also filters at dispatch, because the security property must not depend on configuration living on a different machine.
+The `sms` channel deliberately has no Allowlist and accepts a message from anyone - read `docs/adr/0002-inbound-trust-boundary.md` before "fixing" that.
+
+In front of all of that sits a network boundary, in `server/local-access.ts`.
+`POST /whatsapp/webhook` is on the public-path allowlist **and** additionally restricted to loopback or tailnet source addresses: both, not either.
+Tailnet means Tailscale's `100.64.0.0/10` for IPv4 or `fd7a:115c:a1e0::/48` for IPv6, and the socket address decides, so a forwarding header anyone can write can only narrow the answer and never promote a caller onto the tailnet.
+`isTrustedLocalRequest` stays loopback-only, which is what keeps `/chat`, the agent retry endpoints, and the WebSocket off the tailnet.
+
+The per-function test style asserts the admission *decision* but cannot assert its *position* in the handler.
+That gap is accepted deliberately, so the ordering is a code-review property: `server/openwa/webhook.ts` is kept short enough to read top to bottom.
+
+Channels are deliberately **not** Integrations and are registered separately (`loadChannels()` next to `loadIntegrations()` in `server/index.ts`).
+An Integration is a capability an execution agent uses to get work done; a Channel is how the user reaches Boop at all.
+The dispatcher reads the integration registry only, so it never sees a Channel as spawnable.
+
+---
+
 ## Data model (Convex)
 
-Seven tables. Read `convex/schema.ts` for the exact shape.
+The main tables. Read `convex/schema.ts` for the exact shape.
 
 | Table | Role | Key fields |
 |---|---|---|
-| `messages` | iMessage + chat transcript | conversationId, role, content, turnId |
+| `messages` | Per-conversation transcript, on every channel | conversationId, role, content, turnId |
 | `conversations` | Per-thread metadata | conversationId, messageCount, lastActivityAt |
 | `memoryRecords` | The memory store | memoryId, content, tier, segment, importance, decayRate, accessCount, lifecycle, supersedes |
 | `executionAgents` | One row per spawned agent | agentId, task, status, tokens, cost |
@@ -206,7 +262,7 @@ Seven tables. Read `convex/schema.ts` for the exact shape.
 | `automationRuns` | One row per automation run | runId, automationId, status, result, agentId |
 | `drafts` | Staged external actions | draftId, kind, summary, payload, status |
 | `consolidationRuns` | History of consolidation passes | runId, proposalsCount, mergedCount, prunedCount |
-| `sendblueDedup` | Webhook dedup by `message_handle` | handle, claimedAt |
+| `channelDedup` | Channel-agnostic webhook dedup, keyed by channel and external message ID | channel, externalMessageId, claimedAt |
 | `memoryEvents` | Append-only event log for the debug UI | eventType, conversationId, memoryId, data |
 | `settings` | Runtime overrides (model, browser settings, etc.) read by `server/runtime-config.ts` | key, value, updatedAt |
 
@@ -218,17 +274,19 @@ Indexes are tight — search through the schema to see what's supported.
 
 ## Message lifecycle
 
-Following a text from iMessage to reply, step by step:
+Following a text from a Channel to reply, step by step:
 
 ```
-1.  Sendblue POST /sendblue/webhook
-2.  sendblue.ts:  dedup + spawn handleUserMessage()
+1.  Gateway POST /sendblue/webhook or /whatsapp/webhook
+2.  sendblue.ts / openwa/webhook.ts:  admit, dedup, then
+     spawn handleUserMessage()
 3.  interaction-agent:  save user msg, fetch recent history
 4.  interaction-agent:  query Claude with memory + spawn tools
      ↳ may call recall / write_memory
      ↳ may call spawn_agent → execution-agent runs, returns text
 5.  interaction-agent:  final text → broadcast + return
-6.  sendblue.ts:  sendImessage() chunks + sends
+6.  channels/outbound.ts:  sendToConversation() routes on the
+     conversation's channel prefix, redacts, formats, sends
 7.  interaction-agent:  save assistant msg to Convex
 8.  BACKGROUND: extract.ts pulls durable facts, writes memories
 9.  LATER: clean.ts decays scores, archives or prunes

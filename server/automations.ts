@@ -2,7 +2,7 @@ import { Cron } from "croner";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { spawnExecutionAgent } from "./execution-agent.js";
-import { sendImessage } from "./sendblue.js";
+import { deliverAssistantMessage } from "./channels/delivery.js";
 import { broadcast } from "./broadcast.js";
 import { getUserTimezone } from "./timezone-config.js";
 
@@ -68,16 +68,11 @@ async function runAutomation(a: {
     });
 
     if (a.notifyConversationId && res.result) {
-      if (a.notifyConversationId.startsWith("sms:")) {
-        const number = a.notifyConversationId.slice(4);
-        const preamble = `[${a.name}]\n\n`;
-        await sendImessage(number, preamble + res.result);
-      }
-      await convex.mutation(api.messages.send, {
-        conversationId: a.notifyConversationId,
-        role: "assistant",
-        content: `[${a.name}]\n\n${res.result}`,
-      });
+      // The automation notifies on the Conversation it was created in, so it
+      // lands on whichever Channel the user set it up from. Delivery is what
+      // decides whether the message is recorded: an automation whose
+      // Conversation has no Channel notified nobody.
+      await deliverAssistantMessage(a.notifyConversationId, `[${a.name}]\n\n${res.result}`);
     }
 
     broadcast("automation_completed", { automationId: a.automationId, runId });
