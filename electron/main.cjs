@@ -6,6 +6,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const isMac = process.platform === "darwin";
+const supportsLaunchAtLogin = isMac || process.platform === "win32";
 const productName = "Boop";
 const mutableRuntimeItems = [
   ".env",
@@ -58,7 +59,7 @@ const status = {
   runtimeRoot: "",
   lastMessage: "",
   launchAtLogin: false,
-  launchAtLoginState: "not-registered",
+  launchAtLoginState: supportsLaunchAtLogin ? "not-registered" : "unsupported",
 };
 
 function desktopDataRoot() {
@@ -299,7 +300,7 @@ function plainStatus(value) {
 }
 
 function readLaunchAtLogin() {
-  if (!isMac) return { launchAtLogin: false, launchAtLoginState: "not-registered" };
+  if (!supportsLaunchAtLogin) return { launchAtLogin: false, launchAtLoginState: "unsupported" };
   try {
     const settings = app.getLoginItemSettings();
     return {
@@ -312,7 +313,7 @@ function readLaunchAtLogin() {
 }
 
 function setLaunchAtLogin(enabled) {
-  if (!isMac) return;
+  if (!supportsLaunchAtLogin) return;
   app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
 }
 

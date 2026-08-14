@@ -152,6 +152,8 @@ function render(status) {
 
 function renderLaunchAtLogin(status) {
   if (!fields.launchAtLogin || fields.launchAtLogin.dataset.pending) return;
+  const container = fields.launchAtLogin.closest(".launch-at-login");
+  if (container) container.hidden = status.launchAtLoginState === "unsupported";
   fields.launchAtLogin.checked = Boolean(status.launchAtLogin);
   fields.launchAtLoginNote.textContent =
     status.launchAtLogin && status.launchAtLoginState === "requires-approval"
