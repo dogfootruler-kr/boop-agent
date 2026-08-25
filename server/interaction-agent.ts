@@ -25,6 +25,7 @@ import {
   fetchStoredBytes,
 } from "./images/content-blocks.js";
 import { redactPhoneNumbers } from "./privacy.js";
+import type { TranscriptionRecord } from "./audio/transcribe.js";
 
 const INTERACTION_SYSTEM = `You are Boop, a personal agent the user reaches through a messaging channel.
 
@@ -270,6 +271,10 @@ interface HandleOpts {
   persistAssistantReply?: boolean;
   images?: Array<{ storageId: string; mediaType: string }>;
   mediaError?: string;
+  // Set when `content` was heard rather than typed, so the stored message
+  // says so. Without it a transcript looks like something the user wrote,
+  // and a mangled one is impossible to tell from a strange request.
+  transcription?: TranscriptionRecord;
 }
 
 function randomId(prefix: string): string {
@@ -376,6 +381,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       ? (inboundImageStorageIds as never)
       : undefined,
     mediaError: opts.mediaError,
+    transcription: opts.transcription,
   });
   broadcast(opts.kind === "proactive" ? "proactive_notice" : "user_message", {
     conversationId: opts.conversationId,

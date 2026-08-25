@@ -11,6 +11,18 @@ export default defineSchema({
     createdAt: v.number(),
     imageStorageIds: v.optional(v.array(v.id("_storage"))),
     mediaError: v.optional(v.string()),
+    // Present when the content was heard rather than typed - a voice note,
+    // with any caption kept in front of the transcript. A transcript is
+    // indistinguishable from typed text once stored, and the question asked
+    // of a bad one is always "which model wrote that?", so the transcriber is
+    // recorded with it and the field's presence is the voice-note flag.
+    transcription: v.optional(
+      v.object({
+        provider: v.union(v.literal("local"), v.literal("remote")),
+        model: v.string(),
+        durationSeconds: v.optional(v.number()),
+      }),
+    ),
   })
     .index("by_conversation", ["conversationId"])
     .index("by_conversation_turn", ["conversationId", "turnId"])

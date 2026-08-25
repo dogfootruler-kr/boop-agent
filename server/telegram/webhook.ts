@@ -25,7 +25,11 @@ import { handleUserMessage } from "../interaction-agent.js";
 import { redactContactHandle, redactPhoneNumbers } from "../privacy.js";
 import { maybeHandleScriptedDemoReply } from "../scripted-demo-replies.js";
 import { MAX_AUDIO_SECONDS } from "../audio/mime.js";
-import type { TranscriptionFailure, TranscriptionProvider } from "../audio/transcribe.js";
+import type {
+  TranscriptionFailure,
+  TranscriptionProvider,
+  TranscriptionRecord,
+} from "../audio/transcribe.js";
 import {
   admitInboundTelegramMessage,
   type InboundTelegramVoice,
@@ -87,12 +91,14 @@ export function createTelegramRouter(): express.Router {
     const stopTyping = startTypingForConversation(conversationId);
     try {
       let content = text;
+      let transcription: TranscriptionRecord | undefined;
       if (voice) {
         const heard = await transcribeVoice(voice, turnTag);
         if (!heard.ok) {
           await deliverAssistantMessage(conversationId, heard.reply);
           return;
         }
+        transcription = heard.record;
         // A caption is kept and put first: on an `audio` message it is what
         // the user typed about the thing they are sending, which frames the
         // recording rather than being replaced by it.
@@ -101,8 +107,12 @@ export function createTelegramRouter(): express.Router {
 
       const safeText = redactPhoneNumbers(content);
       const preview = safeText.length > 100 ? safeText.slice(0, 100) + "…" : safeText;
+      // The model is named because the log is where a transcript that came
+      // back as nonsense is diagnosed, and the answer is nearly always which
+      // model heard it.
+      const heardVia = transcription ? ` (voice via ${transcription.model})` : "";
       console.log(
-        `[turn ${turnTag}] ← ${redactContactHandle(handle)}${voice ? " (voice)" : ""}: ${JSON.stringify(preview)}`,
+        `[turn ${turnTag}] ← ${redactContactHandle(handle)}${heardVia}: ${JSON.stringify(preview)}`,
       );
       broadcast("message_in", { conversationId, content });
 
@@ -122,6 +132,7 @@ export function createTelegramRouter(): express.Router {
         turnTag,
         images,
         mediaError,
+        transcription,
         onThinking: (t) => broadcast("thinking", { conversationId, t }),
       });
       if (reply) {
@@ -158,7 +169,9 @@ export function createTelegramRouter(): express.Router {
 async function transcribeVoice(
   voice: InboundTelegramVoice,
   turnTag: string,
-): Promise<{ ok: true; transcript: string } | { ok: false; reply: string }> {
+): Promise<
+  { ok: true; transcript: string; record: TranscriptionRecord } | { ok: false; reply: string }
+> {
   if (voice.durationSeconds !== undefined && voice.durationSeconds > MAX_AUDIO_SECONDS) {
     const minutes = Math.floor(MAX_AUDIO_SECONDS / 60);
     console.log(`[turn ${turnTag}] voice note is ${voice.durationSeconds}s - over the cap`);
@@ -169,7 +182,17 @@ async function transcribeVoice(
   }
 
   const result = await transcribeTelegramVoice(voice.fileId, voice.mimeType);
-  if (result.ok) return { ok: true, transcript: result.text };
+  if (result.ok) {
+    return {
+      ok: true,
+      transcript: result.text,
+      record: {
+        provider: result.provider,
+        model: result.model,
+        durationSeconds: voice.durationSeconds,
+      },
+    };
+  }
 
   // The reason is logged in full and never sent: it can name the configured
   // URL, and the operator reads the log while the user reads the reply.

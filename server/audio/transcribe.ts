@@ -61,8 +61,22 @@ export type TranscriptionFailure =
   | "empty";
 
 export type TranscriptionResult =
-  | { ok: true; text: string; provider: TranscriptionProvider }
+  | { ok: true; text: string; provider: TranscriptionProvider; model: string }
   | { ok: false; failure: TranscriptionFailure; reason: string; provider: TranscriptionProvider };
+
+/**
+ * What is kept about a transcript once the audio is gone.
+ *
+ * Stored on the message, because a transcript stops being distinguishable
+ * from typed text the moment it is persisted - and when one comes back wrong,
+ * the only useful question is which model produced it.
+ */
+export interface TranscriptionRecord {
+  readonly provider: TranscriptionProvider;
+  readonly model: string;
+  /** The length of the note, as the Gateway reported it. */
+  readonly durationSeconds?: number;
+}
 
 /**
  * Validate, cap, and transcribe an already-fetched audio response.
@@ -152,7 +166,7 @@ async function transcribeWithLocalModel(
   }
 
   if (!text) return fail("local", "empty", "the transcript was empty");
-  return { ok: true, text, provider: "local" };
+  return { ok: true, text, provider: "local", model: settings.localModel };
 }
 
 async function transcribeRemotely(
@@ -206,7 +220,7 @@ async function transcribeRemotely(
     }
     const text = body.text.trim();
     if (!text) return fail("remote", "empty", "the transcript was empty");
-    return { ok: true, text, provider: "remote" };
+    return { ok: true, text, provider: "remote", model: settings.model };
   } catch (err) {
     return fail("remote", "rejected", `transcriber returned a non-JSON body: ${String(err)}`);
   }

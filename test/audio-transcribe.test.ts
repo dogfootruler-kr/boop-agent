@@ -225,7 +225,14 @@ describe("transcribeAudioFromResponse (remote)", () => {
 
     const result = await transcribe(audioResponse());
 
-    expect(result).toEqual({ ok: true, text: "buy milk on the way home", provider: "remote" });
+    // The model comes back with the text so the message it becomes can record
+    // which transcriber produced it.
+    expect(result).toEqual({
+      ok: true,
+      text: "buy milk on the way home",
+      provider: "remote",
+      model: "qwen3-asr-0.6b",
+    });
     expect(seen).toMatchObject({
       url: "http://127.0.0.1:8080/v1/audio/transcriptions",
       model: "qwen3-asr-0.6b",
