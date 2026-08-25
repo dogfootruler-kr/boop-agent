@@ -77,6 +77,71 @@ function desktopDataRoot() {
 app.setName(productName);
 app.setPath("userData", desktopDataRoot());
 
+/**
+ * Every line the child processes print, kept on disk.
+ *
+ * The status window shows only the newest line, which is the right amount for
+ * "is it running" and useless for "what did it say twenty minutes ago" - and
+ * launched from Finder there is no terminal holding the rest. Anything Boop
+ * logs about a turn, a transcript included, only ever existed on this stdout,
+ * so it is written here before the status parser picks it apart.
+ *
+ * One rotation, because this is a tail people read after something looked
+ * wrong, not an archive.
+ */
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+const logPath = path.join(desktopDataRoot(), "logs", "boop.log");
+let logStream;
+let logBytes = 0;
+
+function openLog() {
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    logBytes = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    if (logBytes > LOG_MAX_BYTES) {
+      rotateLog();
+      logBytes = 0;
+    }
+    logStream = fs.createWriteStream(logPath, { flags: "a" });
+    // A session marker, so a log spanning several launches can be read back
+    // to the start of the run someone actually cares about.
+    writeLog(`=== ${productName} ${app.getVersion()} started ===`);
+  } catch (error) {
+    // Logging that logging failed is all that is left, and the app must still
+    // start: a full disk is not a reason to refuse to run Boop.
+    console.error(`could not open ${logPath}: ${error.message}`);
+    logStream = undefined;
+  }
+}
+
+function rotateLog() {
+  try {
+    fs.rmSync(`${logPath}.1`, { force: true });
+    fs.renameSync(logPath, `${logPath}.1`);
+  } catch {
+    // A rotation that cannot happen is not worth failing over; the file keeps
+    // growing, and the next launch tries again.
+  }
+}
+
+function writeLog(line) {
+  if (!logStream) return;
+  const entry = `${new Date().toISOString()} ${line}\n`;
+  logBytes += Buffer.byteLength(entry);
+  logStream.write(entry);
+  if (logBytes > LOG_MAX_BYTES) {
+    const previous = logStream;
+    logStream = undefined;
+    previous.end(() => {
+      rotateLog();
+      logBytes = 0;
+      logStream = fs.createWriteStream(logPath, { flags: "a" });
+    });
+  }
+}
+
+openLog();
+
 function isInsideMutablePath(relativePath) {
   const normalized = relativePath.split(path.sep).join("/");
   if (/^\.env\..+\.local$/.test(normalized)) return true;
@@ -556,6 +621,7 @@ function statusMenuTemplate() {
     { label: "Stop Boop", enabled: canStop, click: stopBoop },
     { type: "separator" },
     { label: "Open Runtime Folder", click: () => shell.openPath(runtimeRoot) },
+    { label: "Open Log File", click: () => shell.openPath(logPath) },
   ];
 }
 
@@ -605,6 +671,9 @@ function stripAnsi(value) {
 function ingestLine(line) {
   const plain = stripAnsi(line).trim();
   if (!plain) return;
+  // Written before the filtering below: the status window drops lines it has
+  // no use for, and the log is precisely where those belong.
+  writeLog(plain);
   if (
     intentionalStop &&
     (/^(?:ngrok|tunnel)\s+│/.test(plain) ||
@@ -890,6 +959,7 @@ app.whenReady().then(() => {
 app.on("before-quit", () => {
   quitting = true;
   stopBoop();
+  logStream?.end();
 });
 
 app.on("window-all-closed", () => {
