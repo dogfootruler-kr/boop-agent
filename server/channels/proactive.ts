@@ -36,8 +36,9 @@ const DEFAULT_PROACTIVE_CHANNEL: ChannelKey = "sms";
  */
 export function proactiveConversationId(): string | null {
   const channelKey = proactiveChannelKey();
-  const handle = proactiveHandle();
-  if (!channelKey || !handle) return null;
+  if (!channelKey) return null;
+  const handle = proactiveHandle(channelKey);
+  if (!handle) return null;
   return `${channelKey}:${handle}`;
 }
 
@@ -56,21 +57,41 @@ function proactiveChannelKey(): ChannelKey | null {
 }
 
 /**
- * Bring whatever the user put in `BOOP_USER_PHONE` to a Handle (E.164).
+ * Bring whatever the user put in `BOOP_USER_PHONE` to a Handle on `channelKey`.
  *
- * Without this, a bare 10-digit number in env produces an `sms:NNNNNNNNNN`
- * conversation that doesn't match the `sms:+1NNNNNNNNNN` ID the Gateway uses
- * for inbound messages from the same person - proactive notices end up in a
- * parallel Convex conversation invisible to the user-driven thread. The same
- * reasoning holds on every Channel: a Handle is E.164 everywhere.
+ * A Handle is E.164 on the two Channels addressed by phone number, and the
+ * normalization matters: without it a bare 10-digit number in env produces an
+ * `sms:NNNNNNNNNN` conversation that doesn't match the `sms:+1NNNNNNNNNN` ID
+ * the Gateway uses for inbound messages from the same person, and proactive
+ * notices end up in a parallel Convex conversation invisible to the
+ * user-driven thread.
+ *
+ * Telegram is the exception that makes this take a Channel at all: it
+ * addresses a chat by numeric chat ID, not by phone number, so E.164
+ * normalization there would produce a Conversation ID that matches nothing
+ * inbound and a `sendMessage` that Telegram answers with "chat not found".
+ * The env var keeps its phone-shaped name because renaming it would break
+ * every existing `.env.local` for no behavioural gain.
  */
-function proactiveHandle(): string | null {
+function proactiveHandle(channelKey: ChannelKey): string | null {
   const raw = process.env[PROACTIVE_HANDLE_ENV];
   if (!raw?.trim()) {
     console.warn(`[proactive] ${PROACTIVE_HANDLE_ENV} not set; skipping dispatch`);
     return null;
   }
   const trimmed = raw.trim();
+
+  if (channelKey === "telegram") {
+    // Negative for a group; kept verbatim, because a chat ID is an opaque
+    // identifier rather than a number with a canonical form.
+    if (/^-?\d+$/.test(trimmed)) return trimmed;
+    console.warn(
+      `[proactive] ${PROACTIVE_HANDLE_ENV}=${JSON.stringify(raw)} is not a Telegram chat ID; ` +
+        `on the telegram channel this must be the numeric chat ID, not a phone number. Skipping dispatch`,
+    );
+    return null;
+  }
+
   if (trimmed.startsWith("+")) return trimmed;
   if (/^\d{10}$/.test(trimmed)) return `+1${trimmed}`;
   if (/^\d{11,15}$/.test(trimmed)) return `+${trimmed}`;

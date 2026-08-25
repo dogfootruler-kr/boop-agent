@@ -218,6 +218,15 @@ export function isPublicServerRequest(request: RequestLike): boolean {
   if (request.method === "GET" && normalizedPath === "/health") return true;
   if (request.method === "POST" && normalizedPath === "/sendblue/webhook") return true;
   if (request.method === "POST" && normalizedPath === "/composio/webhook") return true;
+  // The `telegram` Channel's inbound path. Its Gateway is Telegram's own cloud,
+  // which reaches Boop over the public internet from an address range Boop has
+  // no reason to pin, so this is a public path in the same sense Sendblue's is.
+  // Every call must carry the secret token checked in
+  // `server/telegram/webhook-auth.ts`, and the sender must additionally be on
+  // TELEGRAM_ALLOWLIST - the token alone is not enough to reach the agent, the
+  // user's memory, and every connected integration. Read
+  // `docs/adr/0002-inbound-trust-boundary.md`.
+  if (request.method === "POST" && normalizedPath === "/telegram/webhook") return true;
 
   // The `whatsapp` Channel's inbound path. Its Gateway, OpenWA, runs on the
   // user's own hardware on the user's own tailnet, so unlike Sendblue it never

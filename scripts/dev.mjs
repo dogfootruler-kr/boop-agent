@@ -40,9 +40,38 @@ const envVars = readEnv();
 const port = envVars.PORT || "3456";
 const ngrokDomain = envVars.NGROK_DOMAIN || "";
 const publicUrl = envVars.PUBLIC_URL || "";
-const hasStaticUrl =
-  publicUrl && !publicUrl.includes("localhost") && !publicUrl.includes("127.0.0.1");
-const useNgrok = !hasStaticUrl || Boolean(ngrokDomain);
+
+// A `trycloudflare.com` URL is a quick tunnel: it exists only for the lifetime
+// of the cloudflared process that created it and is dead the moment that
+// process exits. Treating a leftover one as a static URL is what makes a
+// restart look configured while nothing can actually reach the server, so it
+// is deliberately not counted as one - the tunnel gets relaunched and the
+// fresh URL replaces it.
+const isEphemeralUrl = (url) =>
+  !url ||
+  url.includes("localhost") ||
+  url.includes("127.0.0.1") ||
+  url.includes("trycloudflare.com");
+const hasStaticUrl = Boolean(publicUrl) && !isEphemeralUrl(publicUrl);
+
+// Which tunnel to bring up, if any. `auto` prefers ngrok when it is installed
+// and falls back to cloudflared, which needs no account for a quick tunnel.
+// A reserved ngrok domain forces ngrok: it is the only provider that can serve
+// it. A genuinely static PUBLIC_URL means the user is running their own
+// tunnel and Boop should not start a second one.
+const tunnelPreference = (envVars.BOOP_TUNNEL || "auto").toLowerCase();
+let tunnelProvider = "none";
+if (ngrokDomain) {
+  tunnelProvider = "ngrok";
+} else if (tunnelPreference === "none") {
+  tunnelProvider = "none";
+} else if (!hasStaticUrl) {
+  if (tunnelPreference === "ngrok" || tunnelPreference === "cloudflared") {
+    tunnelProvider = tunnelPreference;
+  } else {
+    tunnelProvider = "auto";
+  }
+}
 let convexEnvFile = null;
 
 function writeConvexDevEnvFile() {
@@ -100,15 +129,16 @@ const C = {
   convex: "\x1b[35m",
   debug: "\x1b[33m",
   ngrok: "\x1b[32m",
+  tunnel: "\x1b[32m",
   upstream: "\x1b[34m",
   banner: "\x1b[1;32m",
   dim: "\x1b[2m",
   reset: "\x1b[0m",
 };
 let dashboardUrl = "http://localhost:5173";
-let resolveNgrokOutputUrl;
-const ngrokOutputUrlReady = new Promise((resolve) => {
-  resolveNgrokOutputUrl = resolve;
+let resolveTunnelOutputUrl;
+const tunnelOutputUrlReady = new Promise((resolve) => {
+  resolveTunnelOutputUrl = resolve;
 });
 
 // Vite's http-proxy attaches its own socket error logger that can't be removed
@@ -150,7 +180,14 @@ function run(name, cmd, args, readyPattern) {
         const urlMatch =
           plain.match(/\burl=(https:\/\/\S+)/) ||
           plain.match(/Forwarding\s+(https:\/\/\S+)/);
-        if (urlMatch) resolveNgrokOutputUrl(urlMatch[1].replace(/\/$/, ""));
+        if (urlMatch) resolveTunnelOutputUrl(urlMatch[1].replace(/\/$/, ""));
+      }
+      // cloudflared prints the quick-tunnel URL once, inside an ASCII box on
+      // stderr. There is no local API to read it back from the way ngrok has,
+      // so this line is the only chance to catch it.
+      if (name === "tunnel") {
+        const urlMatch = plain.match(/(https:\/\/[a-z0-9-]+\.trycloudflare\.com)/i);
+        if (urlMatch) resolveTunnelOutputUrl(urlMatch[1]);
       }
 
       if (NOISE_TRIGGERS.some((r) => r.test(plain))) {
@@ -210,7 +247,9 @@ function showBanner(url, stable, webhookSyncState) {
 
   const headline = stable
     ? `your STABLE public URL is live.`
-    : `ngrok tunnel is live.`;
+    : tunnelProvider === "cloudflared"
+      ? `cloudflared tunnel is live.`
+      : `ngrok tunnel is live.`;
   const footerMessage =
     webhookSyncState === "synchronized"
       ? "The inbound webhook above was synchronized with Sendblue automatically."
@@ -232,17 +271,37 @@ ${line}${C.reset}${footer}`);
 
 // --- main ---------------------------------------------------------------
 let ngrokInstalled = false;
-if (useNgrok) {
+let cloudflaredInstalled = false;
+if (tunnelProvider !== "none") {
   ngrokInstalled = await hasBinary("ngrok");
-  if (!ngrokInstalled) {
+  cloudflaredInstalled = await hasBinary("cloudflared");
+  // `auto` resolves here, once it is known what is actually on the machine.
+  if (tunnelProvider === "auto") {
+    tunnelProvider = ngrokInstalled ? "ngrok" : cloudflaredInstalled ? "cloudflared" : "none";
+  } else if (tunnelProvider === "ngrok" && !ngrokInstalled && cloudflaredInstalled) {
+    console.log(
+      `${C.tunnel}tunnel${C.reset} │ BOOP_TUNNEL=ngrok but ngrok is not installed — falling back to cloudflared.`,
+    );
+    tunnelProvider = "cloudflared";
+  } else if (tunnelProvider === "cloudflared" && !cloudflaredInstalled && ngrokInstalled) {
+    console.log(
+      `${C.tunnel}tunnel${C.reset} │ BOOP_TUNNEL=cloudflared but cloudflared is not installed — falling back to ngrok.`,
+    );
+    tunnelProvider = "ngrok";
+  }
+  if (tunnelProvider === "none") {
     console.log(`
-${C.ngrok}! ngrok is not installed — running without a public tunnel.${C.reset}
-${C.dim}  Install:   brew install ngrok         (macOS)
-             or download from https://ngrok.com/download
-  Auth:      ngrok config add-authtoken <token>
-             (free token at https://dashboard.ngrok.com)
-  Without ngrok you can still use the debug dashboard at http://localhost:5173
-  — iMessage replies via Sendblue won't work until your server is reachable.${C.reset}
+${C.tunnel}! No tunnel available — running without a public URL.${C.reset}
+${C.dim}  Install either one:
+    brew install cloudflared   (no account needed for a quick tunnel)
+    brew install ngrok         then: ngrok config add-authtoken <token>
+                               (free token at https://dashboard.ngrok.com)
+
+  Pick one explicitly with BOOP_TUNNEL=cloudflared or BOOP_TUNNEL=ngrok
+  in .env.local; the default tries ngrok first, then cloudflared.
+
+  Without a tunnel you can still use the debug dashboard at http://localhost:5173
+  — inbound messages won't arrive until your server is reachable.${C.reset}
 `);
   }
 }
@@ -282,17 +341,34 @@ const debugChild = run(
 );
 const children = [serverChild, convexChild, debugChild];
 
-let ngrokUrlReady = Promise.resolve(null);
-if (useNgrok && ngrokInstalled) {
+let tunnelUrlReady = Promise.resolve(null);
+if (tunnelProvider === "ngrok") {
   const args = ngrokDomain
     ? ["http", port, `--domain=${ngrokDomain}`, "--log=stdout", "--log-format=term", "--log-level=info"]
     : ["http", port, "--log=stdout", "--log-format=term", "--log-level=info"];
   const ngrokChild = run("ngrok", "ngrok", args);
   children.push(ngrokChild);
-  ngrokUrlReady = Promise.race([
-    ngrokOutputUrlReady,
+  tunnelUrlReady = Promise.race([
+    tunnelOutputUrlReady,
     new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
   ]).then((url) => url ?? waitForNgrokUrl().catch(() => null));
+} else if (tunnelProvider === "cloudflared") {
+  // A quick tunnel: no account, no config, a new hostname every run. The
+  // hostname rotating is the reason the Sendblue and Telegram webhooks are
+  // re-registered below on every boot rather than only when they look stale.
+  const tunnelChild = run("tunnel", "cloudflared", [
+    "tunnel",
+    "--url",
+    `http://localhost:${port}`,
+    "--no-autoupdate",
+  ]);
+  children.push(tunnelChild);
+  // Longer than ngrok's window on purpose: cloudflared picks an edge server
+  // before it prints anything, which is routinely slower than ngrok's start.
+  tunnelUrlReady = Promise.race([
+    tunnelOutputUrlReady,
+    new Promise((resolve) => setTimeout(() => resolve(null), 30000)),
+  ]);
 }
 
 // Wait for all the core services to be ready before printing the banner,
@@ -343,6 +419,24 @@ async function registerSendblueWhenTunnelAppears() {
   }
 }
 
+async function autoRegisterTelegramWebhook(publicUrl) {
+  if (!envVars.TELEGRAM_BOT_TOKEN) return;
+  const prefix = `${C.tunnel}telegram${C.reset} │ `;
+  const tsxBin = localBin("tsx");
+  const child = spawn(tsxBin.cmd, [...tsxBin.args, "scripts/telegram-webhook.ts", publicUrl], {
+    cwd: root,
+    env: { ...process.env },
+  });
+  const feed = (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  };
+  child.stdout.on("data", feed);
+  child.stderr.on("data", feed);
+  await new Promise((r) => child.on("exit", r));
+}
+
 async function autoRegisterComposioWebhook(publicUrl) {
   if (envVars.COMPOSIO_AUTO_WEBHOOK === "false") return;
   if (!envVars.COMPOSIO_API_KEY) return;
@@ -365,7 +459,9 @@ async function autoRegisterComposioWebhook(publicUrl) {
   await new Promise((r) => child.on("exit", r));
 }
 
-if (useNgrok && ngrokInstalled && !ngrokDomain) {
+// Only ngrok: this path polls ngrok's local API, which cloudflared has no
+// equivalent of. cloudflared's registration happens once its URL is captured.
+if (tunnelProvider === "ngrok" && !ngrokDomain) {
   registerSendblueWhenTunnelAppears().catch(() => {});
 }
 
@@ -373,29 +469,41 @@ Promise.all([
   serverChild.ready,
   convexChild.ready,
   debugChild.ready,
-  ngrokUrlReady,
+  tunnelUrlReady,
 ])
-  .then(async ([, , , ngrokUrl]) => {
-    if (useNgrok && ngrokInstalled) {
-      if (ngrokUrl) {
+  .then(async ([, , , tunnelUrl]) => {
+    if (tunnelProvider !== "none") {
+      if (tunnelUrl) {
+        // ngrok's local API is the more current of the two sources when it is
+        // available; cloudflared has none, so its captured URL is used as-is.
+        const liveUrl =
+          tunnelProvider === "ngrok" ? ((await readNgrokUrl()) ?? tunnelUrl) : tunnelUrl;
         // Synchronize both the URL and signing secret. This is required even
         // for a reserved domain because older dashboard-created webhooks may
         // not have Boop's signing secret yet.
-        const webhookSyncState = await registerSendblueWebhookOnce(
-          (await readNgrokUrl()) ?? ngrokUrl,
-        );
+        const webhookSyncState = await registerSendblueWebhookOnce(liveUrl);
+        // Telegram holds one webhook URL per bot, so this simply overwrites
+        // whatever the last run registered - which is exactly what a rotating
+        // quick-tunnel hostname needs.
+        await autoRegisterTelegramWebhook(liveUrl);
         // Composio webhook subscription is fully programmatic (PATCHable),
         // so we can refresh it on every restart regardless of whether the
         // domain is reserved.
-        await autoRegisterComposioWebhook(ngrokUrl);
-        showBanner(ngrokUrl, Boolean(ngrokDomain), webhookSyncState);
-      } else {
+        await autoRegisterComposioWebhook(liveUrl);
+        showBanner(liveUrl, Boolean(ngrokDomain), webhookSyncState);
+      } else if (tunnelProvider === "ngrok") {
         console.log(
           `${C.ngrok}ngrok${C.reset} │ could not read tunnel URL from http://127.0.0.1:4040 — check ngrok output above.`,
+        );
+      } else {
+        console.log(
+          `${C.tunnel}tunnel${C.reset} │ cloudflared did not print a tunnel URL within 30s — check its output above.`,
         );
       }
     } else if (hasStaticUrl) {
       const webhookSyncState = await registerSendblueWebhookOnce(publicUrl);
+      await autoRegisterTelegramWebhook(publicUrl);
+      await autoRegisterComposioWebhook(publicUrl);
       showBanner(publicUrl, true, webhookSyncState);
     } else {
       const line = "═".repeat(68);

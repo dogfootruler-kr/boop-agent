@@ -17,10 +17,9 @@
  * The channel keys Boop knows about.
  *
  * A key listed here is a channel Boop can route to once an adapter for it is
- * registered; it is not a promise that one is. `telegram` is expected next and
- * is deliberately absent until it has an adapter.
+ * registered; it is not a promise that one is.
  */
-export const CHANNEL_KEYS = ["sms", "whatsapp"] as const;
+export const CHANNEL_KEYS = ["sms", "whatsapp", "telegram"] as const;
 
 export type ChannelKey = (typeof CHANNEL_KEYS)[number];
 
@@ -87,6 +86,7 @@ export function parseConversationId(
 const CHANNEL_DISPLAY_NAMES: Record<ChannelKey, string> = {
   sms: "iMessage",
   whatsapp: "WhatsApp",
+  telegram: "Telegram",
 };
 
 /**
@@ -132,6 +132,8 @@ export async function loadChannels(): Promise<void> {
   registerSmsChannel();
   const { registerWhatsappChannel } = await import("./whatsapp.js");
   registerWhatsappChannel();
+  const { registerTelegramChannel } = await import("./telegram.js");
+  registerTelegramChannel();
   const keys = listChannels().map((c) => c.key);
   console.log(
     `[channels] registered: ${keys.join(", ") || "(none - no messaging gateway is configured)"}`,

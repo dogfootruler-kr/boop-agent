@@ -18,3 +18,7 @@ data/
 debug/dist/
 .cache/
 .tsbuildinfo
+
+# Local env backups — these hold live credentials.
+.env.local.bak
+*.env.bak

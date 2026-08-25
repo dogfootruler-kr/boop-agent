@@ -6,6 +6,8 @@ import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
 import { createWhatsappRouter } from "./openwa/webhook.js";
+import { createTelegramRouter } from "./telegram/webhook.js";
+import { ensureTelegramWebhook } from "./telegram/webhook-registration.js";
 import { ensureWhatsappWebhook } from "./openwa/webhook-registration.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
@@ -144,6 +146,10 @@ async function main() {
   // the tailnet only; `server/local-access.ts` holds that restriction, next to
   // the public-path allowlist it is paired with.
   app.use("/whatsapp", createWhatsappRouter());
+  // The `telegram` Channel's inbound path. Telegram's servers call it over the
+  // public internet, so unlike `/whatsapp/webhook` it carries no source-address
+  // restriction; the derived secret token and the Allowlist are the boundary.
+  app.use("/telegram", createTelegramRouter());
   app.use("/composio", createComposioRouter());
   app.use("/memory", createMemoryRouter());
   app.use("/browser", createBrowserRouter());
@@ -215,6 +221,7 @@ async function main() {
     console.log(`  chat        POST http://localhost:${port}/chat`);
     console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
     console.log(`  whatsapp    POST http://localhost:${port}/whatsapp/webhook`);
+    console.log(`  telegram    POST http://localhost:${port}/telegram/webhook`);
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
 
     // Tell the WhatsApp gateway where to deliver inbound messages, once the
@@ -222,6 +229,19 @@ async function main() {
     // forgotten on purpose: it never rejects, it is silent when WhatsApp is
     // unconfigured, and a gateway that is down must not stop Boop starting.
     void ensureWhatsappWebhook({ port });
+
+    // Point Telegram at this Boop, once the port it will be told about is
+    // actually accepting connections. Only possible with a stable public URL:
+    // Telegram calls in from the internet, so for a rotating tunnel it is
+    // `scripts/dev.mjs` that drives the same function once the URL is known.
+    // Fired and forgotten for the same reasons as WhatsApp's.
+    const telegramUrl = process.env.PUBLIC_URL;
+    if (telegramUrl && telegramUrl.startsWith("https://")) {
+      void ensureTelegramWebhook(telegramUrl).then((result) => {
+        if (result.ok) console.log(`[telegram] webhook ${result.state}: ${result.url}`);
+        else console.warn(`[telegram] webhook registration failed: ${result.reason}`);
+      });
+    }
   });
 
   const signalExitCodes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;

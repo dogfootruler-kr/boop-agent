@@ -113,8 +113,23 @@ describe("the proactive Conversation", () => {
     // Not a fallback to iMessage: delivering urgent mail to a channel the
     // user is not watching is the failure this configuration exists to avoid.
     process.env.BOOP_USER_PHONE = OWNER;
-    process.env.BOOP_PROACTIVE_CHANNEL = "telegram";
+    process.env.BOOP_PROACTIVE_CHANNEL = "carrier-pigeon";
 
+    expect(proactiveConversationId()).toBeNull();
+  });
+
+  it("takes a Telegram chat ID verbatim rather than normalizing it to E.164", () => {
+    // The one Channel whose Handle is not a phone number. Normalizing here
+    // would produce a Conversation ID matching nothing inbound and a send
+    // Telegram answers with "chat not found".
+    process.env.BOOP_PROACTIVE_CHANNEL = "telegram";
+    process.env.BOOP_USER_PHONE = "111222333";
+    expect(proactiveConversationId()).toBe("telegram:111222333");
+  });
+
+  it("is nowhere when the telegram handle was written as a phone number", () => {
+    process.env.BOOP_PROACTIVE_CHANNEL = "telegram";
+    process.env.BOOP_USER_PHONE = OWNER;
     expect(proactiveConversationId()).toBeNull();
   });
 
