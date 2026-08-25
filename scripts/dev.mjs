@@ -59,7 +59,9 @@ const hasStaticUrl = Boolean(publicUrl) && !isEphemeralUrl(publicUrl);
 // A reserved ngrok domain forces ngrok: it is the only provider that can serve
 // it. A genuinely static PUBLIC_URL means the user is running their own
 // tunnel and Boop should not start a second one.
-const tunnelPreference = (envVars.BOOP_TUNNEL || "auto").toLowerCase();
+// `process.env` first so a one-off `BOOP_TUNNEL=cloudflared npm run dev` works
+// without editing .env.local, which is where the persistent choice belongs.
+const tunnelPreference = (process.env.BOOP_TUNNEL || envVars.BOOP_TUNNEL || "auto").toLowerCase();
 let tunnelProvider = "none";
 if (ngrokDomain) {
   tunnelProvider = "ngrok";
