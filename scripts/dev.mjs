@@ -62,8 +62,18 @@ const hasStaticUrl = Boolean(publicUrl) && !isEphemeralUrl(publicUrl);
 // `process.env` first so a one-off `BOOP_TUNNEL=cloudflared npm run dev` works
 // without editing .env.local, which is where the persistent choice belongs.
 const tunnelPreference = (process.env.BOOP_TUNNEL || envVars.BOOP_TUNNEL || "auto").toLowerCase();
+
+// A named Cloudflare tunnel: a tunnel the user created and routed to a
+// hostname they own, as opposed to a quick tunnel's throwaway
+// `trycloudflare.com` name. It is the only cloudflared mode that survives a
+// restart, so it is also the only one where PUBLIC_URL is authoritative -
+// cloudflared never prints the hostname, the DNS route does.
+const cloudflareTunnel = envVars.CLOUDFLARE_TUNNEL || "";
+
 let tunnelProvider = "none";
-if (ngrokDomain) {
+if (cloudflareTunnel) {
+  tunnelProvider = "cloudflared-named";
+} else if (ngrokDomain) {
   tunnelProvider = "ngrok";
 } else if (tunnelPreference === "none") {
   tunnelProvider = "none";
@@ -277,6 +287,12 @@ let cloudflaredInstalled = false;
 if (tunnelProvider !== "none") {
   ngrokInstalled = await hasBinary("ngrok");
   cloudflaredInstalled = await hasBinary("cloudflared");
+  if (tunnelProvider === "cloudflared-named" && !cloudflaredInstalled) {
+    console.log(
+      `${C.tunnel}tunnel${C.reset} │ CLOUDFLARE_TUNNEL is set but cloudflared is not installed — running without a tunnel.`,
+    );
+    tunnelProvider = "none";
+  }
   // `auto` resolves here, once it is known what is actually on the machine.
   if (tunnelProvider === "auto") {
     tunnelProvider = ngrokInstalled ? "ngrok" : cloudflaredInstalled ? "cloudflared" : "none";
@@ -354,6 +370,21 @@ if (tunnelProvider === "ngrok") {
     tunnelOutputUrlReady,
     new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
   ]).then((url) => url ?? waitForNgrokUrl().catch(() => null));
+} else if (tunnelProvider === "cloudflared-named") {
+  // `tunnel run` attaches to a tunnel that already exists and is already
+  // routed, so there is no URL to capture: PUBLIC_URL is the hostname the
+  // route points at. Readiness is a log line rather than a URL.
+  const tunnelChild = run(
+    "tunnel",
+    "cloudflared",
+    ["tunnel", "run", cloudflareTunnel, "--no-autoupdate"],
+    /Registered tunnel connection|Connection [0-9a-f-]+ registered/,
+  );
+  children.push(tunnelChild);
+  tunnelUrlReady = Promise.race([
+    tunnelChild.ready.then(() => publicUrl),
+    new Promise((resolve) => setTimeout(() => resolve(publicUrl), 30000)),
+  ]);
 } else if (tunnelProvider === "cloudflared") {
   // A quick tunnel: no account, no config, a new hostname every run. The
   // hostname rotating is the reason the Sendblue and Telegram webhooks are
@@ -492,7 +523,11 @@ Promise.all([
         // so we can refresh it on every restart regardless of whether the
         // domain is reserved.
         await autoRegisterComposioWebhook(liveUrl);
-        showBanner(liveUrl, Boolean(ngrokDomain), webhookSyncState);
+        showBanner(liveUrl, Boolean(ngrokDomain) || tunnelProvider === "cloudflared-named", webhookSyncState);
+      } else if (tunnelProvider === "cloudflared-named") {
+        console.log(
+          `${C.tunnel}tunnel${C.reset} │ CLOUDFLARE_TUNNEL=${cloudflareTunnel} is set but PUBLIC_URL is empty — set PUBLIC_URL to the hostname you routed to that tunnel.`,
+        );
       } else if (tunnelProvider === "ngrok") {
         console.log(
           `${C.ngrok}ngrok${C.reset} │ could not read tunnel URL from http://127.0.0.1:4040 — check ngrok output above.`,

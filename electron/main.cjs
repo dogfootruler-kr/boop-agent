@@ -604,8 +604,10 @@ function ingestLine(line) {
   if (!plain) return;
   if (
     intentionalStop &&
-    (/^ngrok\s+│/.test(plain) || /obj=tunnels\.session|command_line/.test(plain)) &&
-    /Stopping forwarder|Listener closed|failed to accept connection|accept failed|session closed/.test(
+    (/^(?:ngrok|tunnel)\s+│/.test(plain) ||
+      /obj=tunnels\.session|command_line/.test(plain) ||
+      /Initiating graceful shutdown|Tunnel server stopped/.test(plain)) &&
+    /Stopping forwarder|Listener closed|failed to accept connection|accept failed|session closed|context canceled|no more connections active/.test(
       plain,
     )
   ) {
@@ -637,7 +639,9 @@ function ingestLine(line) {
     checkWebhookForPublicUrl = publicUrl;
   }
 
-  if (/ngrok is not installed|No public tunnel configured/.test(plain)) {
+  if (
+    /ngrok is not installed|No tunnel available|No public tunnel configured/.test(plain)
+  ) {
     next.tunnel = "stopped";
     next.webhook = "no-tunnel";
     next.expectedWebhookUrl = "";
