@@ -176,6 +176,76 @@ describe("admitInboundTelegramMessage", () => {
     expect(result).toMatchObject({ admitted: true, message: { text: "look" } });
   });
 
+  it("admits a voice note with no text and carries its descriptor", () => {
+    const result = signed(
+      textMessage({
+        text: undefined,
+        voice: { file_id: "voice-1", duration: 7, mime_type: "audio/ogg", file_size: 9001 },
+      }),
+    );
+    expect(result).toMatchObject({
+      admitted: true,
+      message: {
+        text: "",
+        voice: { fileId: "voice-1", mimeType: "audio/ogg", durationSeconds: 7 },
+      },
+    });
+  });
+
+  it("admits an attached audio file the same way as a held-button voice note", () => {
+    // A voice memo forwarded from another app arrives as `audio`, not `voice`.
+    const result = signed(
+      textMessage({ text: undefined, audio: { file_id: "audio-1", duration: 42 } }),
+    );
+    expect(result).toMatchObject({
+      admitted: true,
+      message: { voice: { fileId: "audio-1", durationSeconds: 42 } },
+    });
+  });
+
+  it("keeps the caption alongside a voice descriptor rather than choosing between them", () => {
+    const result = signed(
+      textMessage({ text: undefined, caption: "listen to this", audio: { file_id: "a" } }),
+    );
+    expect(result).toMatchObject({
+      admitted: true,
+      message: { text: "listen to this", voice: { fileId: "a" } },
+    });
+  });
+
+  it("admits an over-long voice note, leaving the duration cap to the caller", () => {
+    // Dropping it here would be silent, and a voice note that vanishes without
+    // a reply is the one outcome the voice path must not produce.
+    const result = signed(
+      textMessage({ text: undefined, voice: { file_id: "long", duration: 60 * 60 } }),
+    );
+    expect(result).toMatchObject({ admitted: true, message: { voice: { durationSeconds: 3600 } } });
+  });
+
+  it("does not treat a video note as something to transcribe", () => {
+    const result = signed(
+      textMessage({ text: undefined, video_note: { file_id: "round", duration: 5 } }),
+    );
+    expect(result).toEqual({ admitted: false, reason: "empty" });
+  });
+
+  it("ignores a voice object with no file_id", () => {
+    const result = signed(textMessage({ text: undefined, voice: { duration: 3 } }));
+    expect(result).toEqual({ admitted: false, reason: "empty" });
+  });
+
+  it("still refuses a voice note from someone off the allowlist", () => {
+    const result = signed(
+      textMessage({
+        text: undefined,
+        from: { id: Number(STRANGER_CHAT_ID), is_bot: false },
+        chat: { id: Number(STRANGER_CHAT_ID), type: "private" },
+        voice: { file_id: "voice-1" },
+      }),
+    );
+    expect(result).toEqual({ admitted: false, reason: "not-allowlisted" });
+  });
+
   it("keeps a chat ID beyond Number.MAX_SAFE_INTEGER exact by carrying it as a string", () => {
     // Telegram IDs are within 52 bits today, but the handle is the routing key
     // for every reply, so it must never be re-derived through a lossy Number.

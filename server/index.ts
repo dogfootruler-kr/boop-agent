@@ -20,6 +20,10 @@ import { cancelAgent, retryAgent } from "./execution-agent.js";
 import { createComposioRouter } from "./composio-routes.js";
 import { ensureProactiveWatcher } from "./proactive-email.js";
 import { preloadLocalModel } from "./embeddings.js";
+import { checkTranscriber } from "./audio/health.js";
+import { preloadLocalTranscriber } from "./audio/local-whisper.js";
+import { activeTranscriptionProvider, describeTranscriber } from "./audio/transcribe.js";
+import { isTelegramConfigured } from "./telegram/config.js";
 import { createMemoryRouter } from "./memory-routes.js";
 import { createBrowserRouter } from "./browser-routes.js";
 import { createAppleRouter } from "./apple-routes.js";
@@ -51,6 +55,12 @@ async function main() {
   // local BGE-large model in the background so the first user-facing
   // recall() doesn't pay the model-load cost.
   preloadLocalModel();
+  // Only when a Channel that can carry a voice note is configured: the model
+  // is a download, and someone who never uses Telegram must not pay for one
+  // they will never transcribe with.
+  if (isTelegramConfigured() && activeTranscriptionProvider() === "local") {
+    preloadLocalTranscriber();
+  }
 
   // If a stable public URL is configured, register the Composio webhook +
   // Gmail trigger now. For ngrok-based dev, scripts/dev.mjs drives the same
@@ -79,8 +89,10 @@ async function main() {
   app.use("/composio/webhook", express.raw({ type: "application/json", limit: "2mb" }));
   app.use(express.json({ limit: "2mb" }));
 
-  app.get("/health", (_req, res) => {
-    res.json({ ok: true, service: "boop-agent" });
+  app.get("/health", async (_req, res) => {
+    // The transcriber probe is cached, so polling this endpoint does not
+    // hammer whatever is on the other end of BOOP_TRANSCRIBE_URL.
+    res.json({ ok: true, service: "boop-agent", transcription: await checkTranscriber() });
   });
 
   app.get("/runtime-config", async (_req, res) => {
@@ -223,6 +235,17 @@ async function main() {
     console.log(`  whatsapp    POST http://localhost:${port}/whatsapp/webhook`);
     console.log(`  telegram    POST http://localhost:${port}/telegram/webhook`);
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
+
+    // Said out loud at boot because it is the one thing about voice notes
+    // that is invisible otherwise: which model heard you, and whether it is
+    // this machine or somewhere else.
+    if (isTelegramConfigured()) {
+      void checkTranscriber().then((status) => {
+        const line = `[transcribe] ${describeTranscriber()} - ${status.state}`;
+        if (status.state === "unreachable") console.warn(`${line}: ${status.detail ?? ""}`);
+        else console.log(status.detail ? `${line} (${status.detail})` : line);
+      });
+    }
 
     // Tell the WhatsApp gateway where to deliver inbound messages, once the
     // port it will be told about is actually accepting connections. Fired and

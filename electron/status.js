@@ -44,6 +44,8 @@ function dashboardStatus(status) {
     convex: status.convex,
     dashboard: status.dashboard,
     tunnel: status.tunnel,
+    transcription: status.transcription,
+    transcriptionDetails: status.transcriptionDetails,
     webhook: status.webhook,
     dashboardUrl: status.dashboardUrl,
     publicUrl: status.publicUrl,

@@ -34,6 +34,22 @@ export type TelegramDropReason =
   /** Nothing to answer: no text, no caption, no supported media. */
   | "empty";
 
+/**
+ * A voice note or audio file on an inbound message, before it is downloaded.
+ *
+ * Carried out of the gate as a descriptor rather than as bytes for the same
+ * reason a photo is: resolving a `file_id` is an authenticated round trip and
+ * transcribing is slower still, so neither may happen until the message has
+ * been admitted and the dedup claim has been won.
+ */
+export interface InboundTelegramVoice {
+  readonly fileId: string;
+  /** The type Telegram declared. Used when the download itself does not say. */
+  readonly mimeType?: string;
+  /** Length in whole seconds, as Telegram reports it. Absent if it did not. */
+  readonly durationSeconds?: number;
+}
+
 /** An inbound message that has passed every gate and may now cost something. */
 export interface AdmittedTelegramMessage {
   /** The chat ID, as a string. Also the Handle for this Channel. */
@@ -52,6 +68,14 @@ export interface AdmittedTelegramMessage {
    * dedup claim.
    */
   readonly photoFileId?: string;
+  /**
+   * The voice note or audio file on the message, when it carried one.
+   *
+   * A descriptor only; see `InboundTelegramVoice`. Note that this gate does
+   * not enforce the duration cap - an over-long note is admitted so that the
+   * caller can answer the user saying so, which a silent drop could not do.
+   */
+  readonly voice?: InboundTelegramVoice;
   /** The sender's `@username`, when they have one. Logging and diagnostics only. */
   readonly username?: string;
 }
@@ -123,7 +147,8 @@ export function admitInboundTelegramMessage(call: InboundTelegramCall): Telegram
   // 5. Something to answer.
   const text = firstString(message.text, message.caption) ?? "";
   const photoFileId = largestPhotoFileId(message.photo);
-  if (!text && !photoFileId) return drop("empty");
+  const voice = inboundVoice(message);
+  if (!text && !photoFileId && !voice) return drop("empty");
 
   return {
     admitted: true,
@@ -133,8 +158,32 @@ export function admitInboundTelegramMessage(call: InboundTelegramCall): Telegram
       externalMessageId: String(updateId),
       text,
       photoFileId,
+      voice,
       username,
     },
+  };
+}
+
+/**
+ * The voice note or audio file on an inbound message, if there is one.
+ *
+ * Telegram splits these across two fields: `voice` is a note recorded by
+ * holding the microphone button, `audio` is a file that was attached. Both are
+ * someone speaking as far as Boop is concerned - a voice memo forwarded from
+ * another app arrives as `audio` - so both are accepted. `video_note` is not:
+ * it is a video, and nothing downstream would look at the picture.
+ */
+function inboundVoice(message: Record<string, unknown>): InboundTelegramVoice | undefined {
+  const media = isRecord(message.voice)
+    ? message.voice
+    : isRecord(message.audio)
+      ? message.audio
+      : undefined;
+  if (!media || typeof media.file_id !== "string" || !media.file_id) return undefined;
+  return {
+    fileId: media.file_id,
+    mimeType: typeof media.mime_type === "string" ? media.mime_type : undefined,
+    durationSeconds: typeof media.duration === "number" ? media.duration : undefined,
   };
 }
 

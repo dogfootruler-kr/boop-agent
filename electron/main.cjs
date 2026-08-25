@@ -47,6 +47,8 @@ const status = {
   convex: "stopped",
   dashboard: "stopped",
   tunnel: "unknown",
+  transcription: "unknown",
+  transcriptionDetails: "",
   webhook: "unknown",
   dashboardUrl: "http://localhost:5173",
   publicUrl: "",
@@ -535,6 +537,7 @@ function statusMenuTemplate() {
     { label: `Convex: ${plainStatus(status.convex)}`, enabled: false },
     { label: `Dashboard: ${plainStatus(status.dashboard)}`, enabled: false },
     { label: `Tunnel: ${plainStatus(status.tunnel)}`, enabled: false },
+    { label: `Voice notes: ${plainStatus(status.transcription)}`, enabled: false },
     { label: `Sendblue Webhook: ${plainStatus(status.webhook)}`, enabled: false },
     { type: "separator" },
     {
@@ -648,6 +651,21 @@ function ingestLine(line) {
     next.registeredWebhookUrl = "";
     next.webhookDetails = "No public tunnel is running, so Sendblue cannot reach this app.";
   }
+  // The server says which transcriber it found once at boot, in the shape
+  // `[transcribe] <model, and where> - <state>`. Parsed rather than polled to
+  // match how every other row here is filled: this window reads the log.
+  const transcribeMatch = plain.match(
+    /^\[transcribe\] (.+?) - (ready|will-download|unreachable)\b[:\s]*(.*)$/,
+  );
+  if (transcribeMatch) {
+    next.transcription = transcribeMatch[2];
+    next.transcriptionDetails = transcribeMatch[3]
+      ? `${transcribeMatch[1]} — ${transcribeMatch[3].replace(/^\(|\)$/g, "")}`
+      : transcribeMatch[1];
+  }
+  // A model that was downloading has finished, so the boot line is now stale.
+  if (/^\[transcribe\] local model ready in/.test(plain)) next.transcription = "ready";
+
   if (/Convex types haven't been generated/.test(plain)) next.state = "setup-required";
   if (/A child process exited with code|fatal /.test(plain)) next.state = "error";
 
@@ -715,6 +733,7 @@ function resetServiceStatuses(state) {
     convex: state === "stopped" ? "stopped" : "starting",
     dashboard: state === "stopped" ? "stopped" : "starting",
     tunnel: "unknown",
+    transcription: "unknown",
     webhook: "unknown",
     publicUrl: "",
     expectedWebhookUrl: "",
@@ -815,6 +834,7 @@ function restartBoop() {
     convex: "starting",
     dashboard: "starting",
     tunnel: "unknown",
+    transcription: "unknown",
     publicUrl: "",
     lastMessage: "Restarting Boop.",
   });

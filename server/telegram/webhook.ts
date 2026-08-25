@@ -24,8 +24,15 @@ import { deliverAssistantMessage } from "../channels/delivery.js";
 import { handleUserMessage } from "../interaction-agent.js";
 import { redactContactHandle, redactPhoneNumbers } from "../privacy.js";
 import { maybeHandleScriptedDemoReply } from "../scripted-demo-replies.js";
-import { admitInboundTelegramMessage, type TelegramDropReason } from "./inbound.js";
+import { MAX_AUDIO_SECONDS } from "../audio/mime.js";
+import type { TranscriptionFailure, TranscriptionProvider } from "../audio/transcribe.js";
+import {
+  admitInboundTelegramMessage,
+  type InboundTelegramVoice,
+  type TelegramDropReason,
+} from "./inbound.js";
 import { ingestTelegramImage } from "./media.js";
+import { transcribeTelegramVoice } from "./voice.js";
 import { TELEGRAM_WEBHOOK_SECRET_HEADER } from "./webhook-auth.js";
 
 export function createTelegramRouter(): express.Router {
@@ -43,7 +50,8 @@ export function createTelegramRouter(): express.Router {
       return;
     }
 
-    const { handle, conversationId, externalMessageId, text, photoFileId } = admission.message;
+    const { handle, conversationId, externalMessageId, text, photoFileId, voice } =
+      admission.message;
 
     const { claimed } = await convex.mutation(api.channelDedup.claim, {
       channel: "telegram",
@@ -65,32 +73,52 @@ export function createTelegramRouter(): express.Router {
     }
 
     const turnTag = Math.random().toString(36).slice(2, 8);
-    const safeText = redactPhoneNumbers(text);
-    const preview = safeText.length > 100 ? safeText.slice(0, 100) + "…" : safeText;
-    console.log(`[turn ${turnTag}] ← ${redactContactHandle(handle)}: ${JSON.stringify(preview)}`);
     const start = Date.now();
 
-    broadcast("message_in", { conversationId, content: text });
-    // Answered before the turn runs: Telegram re-delivers an update whose
+    // Answered before anything slow runs: Telegram re-delivers an update whose
     // webhook call did not return 200, and a message already being worked on
-    // must not come back.
+    // must not come back. Transcribing a voice note can take tens of seconds,
+    // so the acknowledgement goes out ahead of it rather than after.
     res.json({ ok: true });
 
-    if (
-      await maybeHandleScriptedDemoReply({
-        conversationId,
-        content: text,
-        turnTag,
-      })
-    ) {
-      return;
-    }
-
+    // Started here rather than alongside the agent because transcription is
+    // the slowest part of a voice turn, and it is exactly the stretch during
+    // which the user has no idea whether their note landed.
     const stopTyping = startTypingForConversation(conversationId);
     try {
+      let content = text;
+      if (voice) {
+        const heard = await transcribeVoice(voice, turnTag);
+        if (!heard.ok) {
+          await deliverAssistantMessage(conversationId, heard.reply);
+          return;
+        }
+        // A caption is kept and put first: on an `audio` message it is what
+        // the user typed about the thing they are sending, which frames the
+        // recording rather than being replaced by it.
+        content = text ? `${text}\n\n${heard.transcript}` : heard.transcript;
+      }
+
+      const safeText = redactPhoneNumbers(content);
+      const preview = safeText.length > 100 ? safeText.slice(0, 100) + "…" : safeText;
+      console.log(
+        `[turn ${turnTag}] ← ${redactContactHandle(handle)}${voice ? " (voice)" : ""}: ${JSON.stringify(preview)}`,
+      );
+      broadcast("message_in", { conversationId, content });
+
+      if (
+        await maybeHandleScriptedDemoReply({
+          conversationId,
+          content,
+          turnTag,
+        })
+      ) {
+        return;
+      }
+
       const reply = await handleUserMessage({
         conversationId,
-        content: text,
+        content,
         turnTag,
         images,
         mediaError,
@@ -117,6 +145,61 @@ export function createTelegramRouter(): express.Router {
   });
 
   return router;
+}
+
+/**
+ * Transcribe an admitted voice note, or produce the sentence to say instead.
+ *
+ * Every failure ends in something the user actually receives. A voice note is
+ * an act of trust in a way a text is not - there is no local copy of what was
+ * said and no way to tell from the outside that it went nowhere - so silence
+ * is the one outcome this must never produce.
+ */
+async function transcribeVoice(
+  voice: InboundTelegramVoice,
+  turnTag: string,
+): Promise<{ ok: true; transcript: string } | { ok: false; reply: string }> {
+  if (voice.durationSeconds !== undefined && voice.durationSeconds > MAX_AUDIO_SECONDS) {
+    const minutes = Math.floor(MAX_AUDIO_SECONDS / 60);
+    console.log(`[turn ${turnTag}] voice note is ${voice.durationSeconds}s - over the cap`);
+    return {
+      ok: false,
+      reply: `That one's a bit long for me - I can listen to about ${minutes} minutes at a time. Mind sending a shorter note?`,
+    };
+  }
+
+  const result = await transcribeTelegramVoice(voice.fileId, voice.mimeType);
+  if (result.ok) return { ok: true, transcript: result.text };
+
+  // The reason is logged in full and never sent: it can name the configured
+  // URL, and the operator reads the log while the user reads the reply.
+  console.warn(
+    `[turn ${turnTag}] transcription failed (${result.provider}/${result.failure}): ${result.reason}`,
+  );
+  return { ok: false, reply: voiceFailureReply(result.failure, result.provider) };
+}
+
+/**
+ * What to say when a voice note could not be read.
+ *
+ * "Unavailable" is the only one that depends on which provider was in use,
+ * and it is the one where saying the wrong thing wastes the user's time: the
+ * fix for a model that has not finished downloading has nothing in common
+ * with the fix for a server that was never started.
+ */
+function voiceFailureReply(
+  failure: TranscriptionFailure,
+  provider: TranscriptionProvider,
+): string {
+  if (failure === "unavailable") {
+    return provider === "local"
+      ? "I couldn't get my transcription model loaded - it may still be downloading, or the download didn't finish. Type it to me for now and I'll keep trying in the background."
+      : "I can't listen to voice notes right now - nothing is answering where my transcriber should be. Type it to me in the meantime?";
+  }
+  if (failure === "empty") {
+    return "That note came through silent on my end - I didn't catch anything in it.";
+  }
+  return "I couldn't make sense of that recording, sorry. Mind typing it instead?";
 }
 
 /**

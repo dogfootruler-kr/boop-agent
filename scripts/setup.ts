@@ -994,6 +994,145 @@ so you can switch later by adding/removing the API key.
     }
   }
 
+  // ---- Voice notes ---------------------------------------------------------
+  banner("Voice notes — speech to text");
+  console.log(`
+Hold the mic button in Telegram and Boop transcribes the note, then answers it
+as if you had typed it. Pick how the transcribing happens:
+
+  • Local  — free, runs in-process via @huggingface/transformers
+            (onnx-community/whisper-base, ~75MB, cached next to the embedding
+            model). No API key, no separate server, audio never leaves this
+            machine.
+  • Server — anything speaking OpenAI's /v1/audio/transcriptions: a local
+            OpenASR server running Qwen3-ASR, vLLM, Groq, OpenAI. The only way
+            to reach a model Transformers.js cannot run, and Qwen3-ASR is
+            better than Whisper at this size.
+`);
+
+  const existingTranscribeUrl = existing.BOOP_TRANSCRIBE_URL ?? "";
+  const { transcribeProvider } = await prompts(
+    {
+      type: "select",
+      name: "transcribeProvider",
+      message: "How should Boop transcribe voice notes?",
+      choices: [
+        { title: "Local (free, nothing to install, recommended)", value: "local" },
+        { title: "A transcription server I run or pay for", value: "remote" },
+      ],
+      initial: existingTranscribeUrl ? 1 : 0,
+    },
+    {
+      onCancel: () => {
+        console.log("Setup cancelled.");
+        process.exit(1);
+      },
+    },
+  );
+
+  if (transcribeProvider === "remote") {
+    const remote = await prompts([
+      {
+        type: "text",
+        name: "BOOP_TRANSCRIBE_URL",
+        message: "Transcription endpoint URL",
+        initial: existingTranscribeUrl || "http://127.0.0.1:8080/v1/audio/transcriptions",
+      },
+      {
+        type: "text",
+        name: "BOOP_TRANSCRIBE_MODEL",
+        message: "Model name to request",
+        initial: existing.BOOP_TRANSCRIBE_MODEL || "qwen3-asr-0.6b",
+      },
+      {
+        type: "password",
+        name: "BOOP_TRANSCRIBE_API_KEY",
+        message: "API key, if that endpoint needs one (blank for a local server)",
+        initial: existing.BOOP_TRANSCRIBE_API_KEY ?? "",
+      },
+    ]);
+    (answers as any).BOOP_TRANSCRIBE_URL = remote.BOOP_TRANSCRIBE_URL || "";
+    (answers as any).BOOP_TRANSCRIBE_MODEL = remote.BOOP_TRANSCRIBE_MODEL || "";
+    (answers as any).BOOP_TRANSCRIBE_API_KEY = remote.BOOP_TRANSCRIBE_API_KEY || "";
+    // Clearing these keeps the two paths from being half-configured at once:
+    // a URL always wins, so a stale local model name would just be confusing.
+    (answers as any).BOOP_TRANSCRIBE_LOCAL_MODEL = "";
+    (answers as any).BOOP_TRANSCRIBE_LANGUAGE = "";
+    if (!(await hasBinary("ffmpeg"))) {
+      console.log(`
+Note: ffmpeg is not on your PATH. A transcription server needs it to decode
+Ogg/Opus, which is what Telegram sends. Install it (brew install ffmpeg) on
+whichever machine runs the server.`);
+    }
+  } else {
+    // Local — clear any endpoint so transcribe.ts falls through to the
+    // in-process model on next start.
+    (answers as any).BOOP_TRANSCRIBE_URL = "";
+    (answers as any).BOOP_TRANSCRIBE_MODEL = "";
+    (answers as any).BOOP_TRANSCRIBE_API_KEY = "";
+
+    // Asked rather than left to the env file, because getting it wrong is
+    // silent: Whisper does not detect the language here, and an unset value
+    // decodes every note as English. German speech comes back as fluent
+    // English nonsense instead of as an error.
+    console.log(`
+Whisper does not auto-detect the language — it decodes as English unless told
+otherwise, and a German note read as English comes back as nonsense rather
+than as an error. Say which language you speak to Boop in.
+`);
+    const local = await prompts([
+      {
+        type: "text",
+        name: "BOOP_TRANSCRIBE_LANGUAGE",
+        message: "Language you record voice notes in (english, german, french…)",
+        initial: existing.BOOP_TRANSCRIBE_LANGUAGE || "english",
+      },
+      {
+        type: "select",
+        name: "BOOP_TRANSCRIBE_LOCAL_MODEL",
+        message: "Which local model?",
+        choices: [
+          { title: "whisper-base — ~75MB, fastest", value: "" },
+          {
+            title: "whisper-small — ~250MB, better outside English",
+            value: "onnx-community/whisper-small",
+          },
+        ],
+        initial: existing.BOOP_TRANSCRIBE_LOCAL_MODEL ? 1 : 0,
+      },
+    ]);
+    (answers as any).BOOP_TRANSCRIBE_LANGUAGE = (local.BOOP_TRANSCRIBE_LANGUAGE || "")
+      .trim()
+      .toLowerCase();
+    (answers as any).BOOP_TRANSCRIBE_LOCAL_MODEL = local.BOOP_TRANSCRIBE_LOCAL_MODEL ?? "";
+
+    const { preloadVoice } = await prompts({
+      type: "confirm",
+      name: "preloadVoice",
+      message: "Pre-download the model now? (saves the wait on your first voice note)",
+      initial: true,
+    });
+    if (preloadVoice) {
+      console.log("\nDownloading the transcription model… (Ctrl+C to skip)\n");
+      try {
+        // .env.local is not written until the end of setup, so the child would
+        // otherwise read whatever was configured BEFORE this run. Setting them
+        // here works because the child inherits process.env and dotenv does
+        // not override a variable that is already present.
+        process.env.BOOP_TRANSCRIBE_URL = "";
+        process.env.BOOP_TRANSCRIBE_LOCAL_MODEL = (answers as any).BOOP_TRANSCRIBE_LOCAL_MODEL;
+        const tsx = packageCommand("tsx", "tsx");
+        await runInherit(tsx.cmd, [...tsx.leading, "scripts/preload-transcription.ts"]);
+        console.log("✓ Transcription model cached.");
+      } catch (err) {
+        console.warn(
+          "Preload failed — the model will download on the first voice note instead.",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   // ---- Local browser use ---------------------------------------------------
   banner("Local browser use — optional");
   console.log(`
