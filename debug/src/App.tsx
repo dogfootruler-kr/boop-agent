@@ -60,6 +60,8 @@ interface DesktopStatus {
   convex: string;
   dashboard: string;
   tunnel: string;
+  transcription?: string;
+  transcriptionDetails?: string;
   webhook?: string;
   dashboardUrl?: string;
   publicUrl?: string;
@@ -456,6 +458,7 @@ function ConnectionHeader({
         { label: "Convex", value: desktopStatus.convex },
         { label: "Dashboard", value: desktopStatus.dashboard },
         { label: "Tunnel", value: desktopStatus.tunnel },
+        { label: "Voice notes", value: desktopStatus.transcription ?? "unknown" },
         { label: "Sendblue webhook", value: desktopStatus.webhook ?? "unknown" },
       ]
     : [{ label: "Dashboard socket", value: connected ? "running" : "stopped" }];
@@ -575,6 +578,11 @@ function ConnectionHeader({
               <ConnectionDetail label="Text Boop" value={desktopStatus.phoneNumber} isDark={isDark} />
               <ConnectionDetail label="Public URL" value={desktopStatus.publicUrl} isDark={isDark} />
               <ConnectionDetail
+                label="Voice notes"
+                value={desktopStatus.transcriptionDetails}
+                isDark={isDark}
+              />
+              <ConnectionDetail
                 label="Expected webhook"
                 value={desktopStatus.expectedWebhookUrl}
                 isDark={isDark}
@@ -692,8 +700,13 @@ function statusLabel(value?: string) {
 }
 
 function statusDotClass(value?: string) {
-  if (value === "running" || value === "registered") return "bg-emerald-400";
+  if (value === "running" || value === "registered" || value === "ready") return "bg-emerald-400";
   if (value === "starting" || value === "checking") return "bg-amber-400";
+  // The transcriber's own states: a model that has not been fetched yet still
+  // works, it just makes the first voice note wait, so it is a warning rather
+  // than a failure. Nothing listening at a configured endpoint is a failure.
+  if (value === "will-download") return "bg-amber-400";
+  if (value === "unreachable") return "bg-rose-400";
   if (value === "error" || value === "setup-required" || value === "mismatch" || value === "missing") {
     return "bg-rose-400";
   }

@@ -4,11 +4,8 @@ import {
   MAX_AUDIO_BYTES,
   validateAudioHeader,
 } from "../server/audio/mime.js";
-import {
-  activeTranscriptionProvider,
-  remoteEndpoint,
-  transcribeAudioFromResponse,
-} from "../server/audio/transcribe.js";
+import { transcriptionSettingsFromEnv } from "../server/audio/settings.js";
+import { transcribeAudioFromResponse } from "../server/audio/transcribe.js";
 
 const TRANSCRIBE_ENV = [
   "BOOP_TRANSCRIBE_URL",
@@ -47,6 +44,22 @@ beforeEach(() => {
 /** Select the remote provider, which is what the wire-level tests exercise. */
 function useRemote(url = REMOTE_URL): void {
   process.env.BOOP_TRANSCRIBE_URL = url;
+}
+
+/**
+ * Settings built from the environment alone.
+ *
+ * Passed explicitly so no test reaches for Convex: the production path reads
+ * stored settings first, and a unit test that needed a database to check MIME
+ * handling would be testing the wrong thing.
+ */
+function envSettings() {
+  return transcriptionSettingsFromEnv();
+}
+
+/** `transcribeAudioFromResponse`, pinned to the environment's settings. */
+function transcribe(res: Response, declaredMimeType?: string) {
+  return transcribeAudioFromResponse(res, declaredMimeType, envSettings());
 }
 
 afterEach(() => {
@@ -127,25 +140,33 @@ describe("provider selection", () => {
   it("transcribes in-process when no endpoint is configured", () => {
     // The whole point of the default: a fresh checkout can hear a voice note
     // without anyone installing a transcriber first.
-    expect(activeTranscriptionProvider()).toBe("local");
-    expect(remoteEndpoint()).toBeNull();
+    expect(envSettings()).toMatchObject({ provider: "local", url: "" });
   });
 
   it("hands the work to an endpoint as soon as one is set", () => {
     useRemote();
-    expect(activeTranscriptionProvider()).toBe("remote");
+    expect(envSettings().provider).toBe("remote");
   });
 
   it("does not fall back to the local model when the endpoint is unreachable", () => {
     // Falling back would hide a broken transcriber behind quietly different
     // results, which is worse than failing where the user can see it.
     useRemote("http://127.0.0.1:9/v1/audio/transcriptions");
-    expect(activeTranscriptionProvider()).toBe("remote");
+    expect(envSettings().provider).toBe("remote");
   });
 
   it("defaults an endpoint's model to Qwen3-ASR", () => {
     useRemote();
-    expect(remoteEndpoint()).toMatchObject({ url: REMOTE_URL, model: "qwen3-asr-0.6b" });
+    expect(envSettings()).toMatchObject({ url: REMOTE_URL, model: "qwen3-asr-0.6b" });
+  });
+
+  it("defaults the in-process model to whisper-base", () => {
+    expect(envSettings().localModel).toBe("onnx-community/whisper-base");
+  });
+
+  it("normalises the language, which Whisper wants lowercased", () => {
+    process.env.BOOP_TRANSCRIBE_LANGUAGE = " German ";
+    expect(envSettings().language).toBe("german");
   });
 
   it("does not send OPENAI_API_KEY to a host that is not OpenAI", () => {
@@ -153,20 +174,19 @@ describe("provider selection", () => {
     // turn it into a credential handed to a third party.
     process.env.OPENAI_API_KEY = "sk-not-a-real-key";
     useRemote("https://asr.example.com/v1/audio/transcriptions");
-    expect(remoteEndpoint()?.apiKey).toBeUndefined();
+    expect(envSettings().apiKeyConfigured).toBe(false);
   });
 
   it("uses OPENAI_API_KEY when the endpoint really is OpenAI's", () => {
     process.env.OPENAI_API_KEY = "sk-not-a-real-key";
     useRemote("https://api.openai.com/v1/audio/transcriptions");
-    expect(remoteEndpoint()?.apiKey).toBe("sk-not-a-real-key");
+    expect(envSettings().apiKeyConfigured).toBe(true);
   });
 
-  it("prefers an explicit BOOP_TRANSCRIBE_API_KEY", () => {
-    process.env.OPENAI_API_KEY = "sk-embeddings";
-    useRemote("https://api.openai.com/v1/audio/transcriptions");
+  it("never puts the key itself in the settings the dashboard is shown", () => {
     process.env.BOOP_TRANSCRIBE_API_KEY = "sk-transcribe";
-    expect(remoteEndpoint()?.apiKey).toBe("sk-transcribe");
+    useRemote();
+    expect(JSON.stringify(envSettings())).not.toContain("sk-transcribe");
   });
 });
 
@@ -175,15 +195,13 @@ describe("the in-process provider", () => {
     // mp3 needs ffmpeg, which is exactly what the in-process path exists to
     // avoid requiring. The answer must name the fix rather than look like a
     // corrupt file.
-    const result = await transcribeAudioFromResponse(
-      audioResponse("id3-bytes", { "content-type": "audio/mpeg" }),
-    );
+    const result = await transcribe(audioResponse("id3-bytes", { "content-type": "audio/mpeg" }));
     expect(result).toMatchObject({ ok: false, failure: "rejected", provider: "local" });
     expect((result as { reason: string }).reason).toContain("remote transcriber");
   });
 
   it("reports undecodable Ogg as rejected rather than crashing", async () => {
-    const result = await transcribeAudioFromResponse(audioResponse("not really ogg"));
+    const result = await transcribe(audioResponse("not really ogg"));
     expect(result).toMatchObject({ ok: false, failure: "rejected", provider: "local" });
   });
 });
@@ -205,7 +223,7 @@ describe("transcribeAudioFromResponse (remote)", () => {
       return Response.json({ text: "  buy milk on the way home  " });
     });
 
-    const result = await transcribeAudioFromResponse(audioResponse());
+    const result = await transcribe(audioResponse());
 
     expect(result).toEqual({ ok: true, text: "buy milk on the way home", provider: "remote" });
     expect(seen).toMatchObject({
@@ -221,40 +239,38 @@ describe("transcribeAudioFromResponse (remote)", () => {
     stubTranscriber(() => {
       throw new TypeError("fetch failed");
     });
-    const result = await transcribeAudioFromResponse(audioResponse());
+    const result = await transcribe(audioResponse());
     expect(result).toMatchObject({ ok: false, failure: "unavailable", provider: "remote" });
   });
 
   it("treats a 404 as a misconfigured endpoint rather than a refused recording", async () => {
     stubTranscriber(() => new Response("not found", { status: 404 }));
-    const result = await transcribeAudioFromResponse(audioResponse());
+    const result = await transcribe(audioResponse());
     expect(result).toMatchObject({ ok: false, failure: "unavailable", provider: "remote" });
   });
 
   it("treats a 5xx from the transcriber as a rejection", async () => {
     stubTranscriber(() => new Response("model exploded", { status: 500 }));
-    const result = await transcribeAudioFromResponse(audioResponse());
+    const result = await transcribe(audioResponse());
     expect(result).toMatchObject({ ok: false, failure: "rejected" });
   });
 
   it("reports a transcript with no words in it as empty", async () => {
     stubTranscriber(() => Response.json({ text: "   " }));
-    const result = await transcribeAudioFromResponse(audioResponse());
+    const result = await transcribe(audioResponse());
     expect(result).toMatchObject({ ok: false, failure: "empty" });
   });
 
   it("does not call the transcriber at all when the download failed", async () => {
     const fetchSpy = stubTranscriber(() => Response.json({ text: "never" }));
-    const result = await transcribeAudioFromResponse(new Response("nope", { status: 502 }));
+    const result = await transcribe(new Response("nope", { status: 502 }));
     expect(result).toMatchObject({ ok: false, failure: "rejected" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("does not call the transcriber for a file type it cannot use", async () => {
     const fetchSpy = stubTranscriber(() => Response.json({ text: "never" }));
-    const result = await transcribeAudioFromResponse(
-      audioResponse("bytes", { "content-type": "application/pdf" }),
-    );
+    const result = await transcribe(audioResponse("bytes", { "content-type": "application/pdf" }));
     expect(result).toMatchObject({ ok: false, failure: "rejected" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -267,7 +283,7 @@ describe("transcribeAudioFromResponse (remote)", () => {
       },
     });
     const fetchSpy = stubTranscriber(() => Response.json({ text: "never" }));
-    const result = await transcribeAudioFromResponse(
+    const result = await transcribe(
       new Response(oversized, { status: 200, headers: { "content-type": "audio/ogg" } }),
     );
     expect(result).toMatchObject({ ok: false, failure: "rejected" });
@@ -282,7 +298,7 @@ describe("transcribeAudioFromResponse (remote)", () => {
       auth = new Headers(init.headers ?? {}).get("authorization");
       return Response.json({ text: "ok" });
     });
-    await transcribeAudioFromResponse(audioResponse());
+    await transcribe(audioResponse());
     expect(auth).toBe("Bearer sk-transcribe");
   });
 });

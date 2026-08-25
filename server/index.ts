@@ -22,7 +22,8 @@ import { ensureProactiveWatcher } from "./proactive-email.js";
 import { preloadLocalModel } from "./embeddings.js";
 import { checkTranscriber } from "./audio/health.js";
 import { preloadLocalTranscriber } from "./audio/local-whisper.js";
-import { activeTranscriptionProvider, describeTranscriber } from "./audio/transcribe.js";
+import { createTranscriptionRouter } from "./audio/routes.js";
+import { getTranscriptionSettings } from "./audio/settings.js";
 import { isTelegramConfigured } from "./telegram/config.js";
 import { createMemoryRouter } from "./memory-routes.js";
 import { createBrowserRouter } from "./browser-routes.js";
@@ -58,8 +59,10 @@ async function main() {
   // Only when a Channel that can carry a voice note is configured: the model
   // is a download, and someone who never uses Telegram must not pay for one
   // they will never transcribe with.
-  if (isTelegramConfigured() && activeTranscriptionProvider() === "local") {
-    preloadLocalTranscriber();
+  if (isTelegramConfigured()) {
+    void getTranscriptionSettings().then((settings) => {
+      if (settings.provider === "local") preloadLocalTranscriber(settings.localModel);
+    });
   }
 
   // If a stable public URL is configured, register the Composio webhook +
@@ -166,6 +169,7 @@ async function main() {
   app.use("/memory", createMemoryRouter());
   app.use("/browser", createBrowserRouter());
   app.use("/apple", createAppleRouter());
+  app.use("/transcription", createTranscriptionRouter());
   app.use("/changelog", createChangelogRouter());
 
   app.post("/agents/:id/cancel", (req, res) => {
@@ -241,7 +245,7 @@ async function main() {
     // this machine or somewhere else.
     if (isTelegramConfigured()) {
       void checkTranscriber().then((status) => {
-        const line = `[transcribe] ${describeTranscriber()} - ${status.state}`;
+        const line = `[transcribe] ${status.description} - ${status.state}`;
         if (status.state === "unreachable") console.warn(`${line}: ${status.detail ?? ""}`);
         else console.log(status.detail ? `${line} (${status.detail})` : line);
       });

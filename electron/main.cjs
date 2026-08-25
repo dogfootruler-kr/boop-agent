@@ -654,8 +654,12 @@ function ingestLine(line) {
   // The server says which transcriber it found once at boot, in the shape
   // `[transcribe] <model, and where> - <state>`. Parsed rather than polled to
   // match how every other row here is filled: this window reads the log.
+  //
+  // Deliberately NOT anchored to the start of the line. What arrives here has
+  // already been through scripts/dev.mjs, which prefixes every child line with
+  // `server │ `, so an anchored pattern would match nothing at all.
   const transcribeMatch = plain.match(
-    /^\[transcribe\] (.+?) - (ready|will-download|unreachable)\b[:\s]*(.*)$/,
+    /\[transcribe\] (.+?) - (ready|will-download|unreachable)\b[:\s]*(.*)$/,
   );
   if (transcribeMatch) {
     next.transcription = transcribeMatch[2];
@@ -664,7 +668,7 @@ function ingestLine(line) {
       : transcribeMatch[1];
   }
   // A model that was downloading has finished, so the boot line is now stale.
-  if (/^\[transcribe\] local model ready in/.test(plain)) next.transcription = "ready";
+  if (/\[transcribe\] local model ready in/.test(plain)) next.transcription = "ready";
 
   if (/Convex types haven't been generated/.test(plain)) next.state = "setup-required";
   if (/A child process exited with code|fatal /.test(plain)) next.state = "error";

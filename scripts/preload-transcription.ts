@@ -1,18 +1,20 @@
 #!/usr/bin/env tsx
-// Tiny one-shot to download + warm the local Whisper model. Used by
-// `npm run setup` and by the user manually if they want to pre-cache.
-import { getLocalTranscriber, localModelName } from "../server/audio/local-whisper.js";
-import { activeTranscriptionProvider, describeTranscriber } from "../server/audio/transcribe.js";
+// Tiny one-shot to download + warm the local transcription model. Used by
+// `npm run setup`, by the dashboard's "Download now" button, and by the user
+// manually if they want to pre-cache.
+import { getLocalTranscriber } from "../server/audio/local-whisper.js";
+import { describeTranscriber, getTranscriptionSettings } from "../server/audio/settings.js";
 
 async function main() {
-  if (activeTranscriptionProvider() === "remote") {
-    console.log(`[preload] BOOP_TRANSCRIBE_URL is set (${describeTranscriber()}).`);
+  const settings = await getTranscriptionSettings();
+  if (settings.provider === "remote") {
+    console.log(`[preload] a transcription endpoint is configured (${describeTranscriber(settings)}).`);
     console.log("[preload] Nothing to download - that endpoint owns the model.");
     return;
   }
-  console.log(`[preload] warming local transcription model ${localModelName()}…`);
+  console.log(`[preload] warming local transcription model ${settings.localModel}…`);
   const start = Date.now();
-  await getLocalTranscriber();
+  await getLocalTranscriber(settings.localModel);
   console.log(`[preload] ready in ${Date.now() - start}ms`);
 }
 

@@ -22,16 +22,21 @@
  * check, and the choice of provider are what is genuinely shared.
  */
 import { canDecodeLocally, decodeToMono16k } from "./decode.js";
-import { localModelName, transcribeLocally } from "./local-whisper.js";
+import { transcribeLocally } from "./local-whisper.js";
 import {
   audioFilename,
   MAX_AUDIO_BYTES,
   validateAudioHeader,
   type AudioMediaType,
 } from "./mime.js";
+import {
+  getTranscriptionSettings,
+  transcriptionApiKey,
+  type TranscriptionProvider,
+  type TranscriptionSettings,
+} from "./settings.js";
 
-/** The model name sent to a remote endpoint, when none is configured. */
-const DEFAULT_REMOTE_MODEL = "qwen3-asr-0.6b";
+export type { TranscriptionProvider, TranscriptionSettings };
 
 /**
  * Generous, because a local model transcribing ten minutes of audio on a
@@ -39,14 +44,6 @@ const DEFAULT_REMOTE_MODEL = "qwen3-asr-0.6b";
  * indicator.
  */
 const TRANSCRIBE_TIMEOUT_MS = 180_000;
-
-export type TranscriptionProvider = "remote" | "local";
-
-export interface RemoteEndpoint {
-  readonly url: string;
-  readonly model: string;
-  readonly apiKey: string | undefined;
-}
 
 /**
  * Why a voice note did not become text.
@@ -68,51 +65,22 @@ export type TranscriptionResult =
   | { ok: false; failure: TranscriptionFailure; reason: string; provider: TranscriptionProvider };
 
 /**
- * Which provider a transcription would use right now.
- *
- * A configured URL always wins. Someone who set one meant it, and silently
- * falling back to the in-process model would hide the fact that their
- * transcriber is down behind quietly different results.
- */
-export function activeTranscriptionProvider(): TranscriptionProvider {
-  return remoteEndpoint() ? "remote" : "local";
-}
-
-/** The configured remote endpoint, or null when there is none. */
-export function remoteEndpoint(): RemoteEndpoint | null {
-  const url = process.env.BOOP_TRANSCRIBE_URL?.trim();
-  if (!url) return null;
-  // OPENAI_API_KEY is honoured only when the endpoint is actually OpenAI's.
-  // A key set for embeddings must not be posted to whatever host someone put
-  // in BOOP_TRANSCRIBE_URL.
-  const apiKey =
-    process.env.BOOP_TRANSCRIBE_API_KEY?.trim() ||
-    (isOpenAiHost(url) ? process.env.OPENAI_API_KEY?.trim() : undefined) ||
-    undefined;
-  return {
-    url,
-    model: process.env.BOOP_TRANSCRIBE_MODEL?.trim() || DEFAULT_REMOTE_MODEL,
-    apiKey,
-  };
-}
-
-/** One line naming the active provider, for logs and status surfaces. */
-export function describeTranscriber(): string {
-  const remote = remoteEndpoint();
-  return remote ? `${remote.model} at ${remote.url}` : `${localModelName()} (in-process)`;
-}
-
-/**
  * Validate, cap, and transcribe an already-fetched audio response.
  *
  * `declaredMimeType` is the type the Gateway put on the message envelope, used
  * when the download itself does not say - see `AudioHeader.declaredType`.
+ *
+ * `settings` is resolved from Convex-over-environment when not supplied. It is
+ * an argument at all so that a caller which already has them does not re-read
+ * them mid-turn, and so that tests can drive every branch without a database.
  */
 export async function transcribeAudioFromResponse(
   res: Response,
   declaredMimeType?: string,
+  settings?: TranscriptionSettings,
 ): Promise<TranscriptionResult> {
-  const provider = activeTranscriptionProvider();
+  const active = settings ?? (await getTranscriptionSettings());
+  const provider = active.provider;
   if (!res.ok) {
     res.body?.cancel().catch(() => undefined);
     return fail(provider, "rejected", `download failed: HTTP ${res.status}`);
@@ -136,23 +104,25 @@ export async function transcribeAudioFromResponse(
   }
   if (bytes.byteLength === 0) return fail(provider, "empty", "the audio was empty");
 
-  return transcribeAudioBytes(bytes, check.mediaType);
+  return transcribeAudioBytes(bytes, check.mediaType, active);
 }
 
 /** Transcribe already-downloaded audio with whichever provider is active. */
 export async function transcribeAudioBytes(
   bytes: ArrayBuffer,
   mediaType: AudioMediaType,
+  settings?: TranscriptionSettings,
 ): Promise<TranscriptionResult> {
-  const remote = remoteEndpoint();
-  return remote
-    ? transcribeRemotely(bytes, mediaType, remote)
-    : transcribeWithLocalModel(bytes, mediaType);
+  const active = settings ?? (await getTranscriptionSettings());
+  return active.provider === "remote"
+    ? transcribeRemotely(bytes, mediaType, active)
+    : transcribeWithLocalModel(bytes, mediaType, active);
 }
 
 async function transcribeWithLocalModel(
   bytes: ArrayBuffer,
   mediaType: AudioMediaType,
+  settings: TranscriptionSettings,
 ): Promise<TranscriptionResult> {
   if (!canDecodeLocally(mediaType)) {
     // Worth being specific about: it is not a broken file, it is a container
@@ -170,7 +140,10 @@ async function transcribeWithLocalModel(
 
   let text: string;
   try {
-    text = await transcribeLocally(decoded.samples);
+    text = await transcribeLocally(decoded.samples, {
+      model: settings.localModel,
+      language: settings.language,
+    });
   } catch (err) {
     // Loading the model is the part that fails, and it fails by not being
     // downloadable. That is the same event as "no transcriber answered", so
@@ -185,18 +158,19 @@ async function transcribeWithLocalModel(
 async function transcribeRemotely(
   bytes: ArrayBuffer,
   mediaType: AudioMediaType,
-  endpoint: RemoteEndpoint,
+  settings: TranscriptionSettings,
 ): Promise<TranscriptionResult> {
   const form = new FormData();
   form.append("file", new Blob([bytes], { type: mediaType }), audioFilename(mediaType));
-  form.append("model", endpoint.model);
+  form.append("model", settings.model);
   form.append("response_format", "json");
 
+  const apiKey = transcriptionApiKey(settings.url);
   let res: Response;
   try {
-    res = await fetch(endpoint.url, {
+    res = await fetch(settings.url, {
       method: "POST",
-      headers: endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : undefined,
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
       body: form,
       signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
     });
@@ -205,7 +179,11 @@ async function transcribeRemotely(
     // transcriber", and the two get different answers. The URL is included
     // because the fix is nearly always to start the server at it, and it
     // carries no credential - the key travels in a header.
-    return fail("remote", "unavailable", `no transcriber answered at ${endpoint.url}: ${String(err)}`);
+    return fail(
+      "remote",
+      "unavailable",
+      `no transcriber answered at ${settings.url}: ${String(err)}`,
+    );
   }
 
   if (!res.ok) {
@@ -263,14 +241,6 @@ async function readCapped(res: Response): Promise<ArrayBuffer> {
     offset += c.byteLength;
   }
   return out;
-}
-
-function isOpenAiHost(url: string): boolean {
-  try {
-    return new URL(url).hostname === "api.openai.com";
-  } catch {
-    return false;
-  }
 }
 
 /** Keep an upstream error body short enough to log on one line. */

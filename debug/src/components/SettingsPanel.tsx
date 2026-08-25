@@ -10,6 +10,7 @@ import {
 } from "../lib/branding.js";
 import { AppleSection } from "./AppleSection.js";
 import { BrowserSection } from "./BrowserSection.js";
+import { TranscriptionSection } from "./TranscriptionSection.js";
 
 type RuntimeChoice = "claude" | "codex";
 type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -202,6 +203,7 @@ export function SettingsPanel({
             <TimezoneRow key={s.key} setting={s} isDark={isDark} />
           ),
         )}
+        <TranscriptionSection isDark={isDark} />
         <BrowserSection isDark={isDark} />
         <AppleSection isDark={isDark} />
         <DemoModeRow isDark={isDark} />

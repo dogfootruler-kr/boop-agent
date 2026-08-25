@@ -67,9 +67,14 @@ if (value("TELEGRAM_BOT_TOKEN")) {
     // Whisper does not detect the language; unset means it decodes as English,
     // and German audio comes back as confident English nonsense rather than as
     // an error. Worth saying once at start, because nothing downstream will.
+    //
+    // Hedged, because this cannot see the whole picture: the language can also
+    // be set in the dashboard, which stores it in Convex, and this runs as
+    // plain node with no way to ask. The server logs the settings actually in
+    // force a moment later.
     if (!value("BOOP_TRANSCRIBE_LANGUAGE")) {
       console.log(
-        "                 BOOP_TRANSCRIBE_LANGUAGE is unset — voice notes are transcribed as English.",
+        "                 no language set in .env.local — English unless the dashboard says otherwise.",
       );
     }
   }

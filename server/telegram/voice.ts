@@ -8,11 +8,8 @@
  * `server/audio/transcribe.ts` - the same split as `media.ts` and
  * `server/images/ingest.ts`.
  */
-import {
-  activeTranscriptionProvider,
-  transcribeAudioFromResponse,
-  type TranscriptionResult,
-} from "../audio/transcribe.js";
+import { getTranscriptionSettings } from "../audio/settings.js";
+import { transcribeAudioFromResponse, type TranscriptionResult } from "../audio/transcribe.js";
 import { telegramFileUrl } from "./api.js";
 
 const DOWNLOAD_TIMEOUT_MS = 20_000;
@@ -21,6 +18,9 @@ export async function transcribeTelegramVoice(
   fileId: string,
   declaredMimeType?: string,
 ): Promise<TranscriptionResult> {
+  // Read once for the whole call so a settings change mid-download cannot
+  // produce a result attributed to the provider that did not do the work.
+  const settings = await getTranscriptionSettings();
   let url: string;
   try {
     url = await telegramFileUrl(fileId);
@@ -29,7 +29,7 @@ export async function transcribeTelegramVoice(
       ok: false,
       failure: "rejected",
       reason: `could not resolve audio: ${String(err)}`,
-      provider: activeTranscriptionProvider(),
+      provider: settings.provider,
     };
   }
 
@@ -41,8 +41,8 @@ export async function transcribeTelegramVoice(
       ok: false,
       failure: "rejected",
       reason: `download failed: ${String(err)}`,
-      provider: activeTranscriptionProvider(),
+      provider: settings.provider,
     };
   }
-  return transcribeAudioFromResponse(res, declaredMimeType);
+  return transcribeAudioFromResponse(res, declaredMimeType, settings);
 }
